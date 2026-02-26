@@ -1,8 +1,9 @@
 import template from './sw-admin-menu.html.twig';
 import './sw-admin-menu.scss';
+import { computePosition, autoUpdate, offset, flip } from '@floating-ui/dom';
 
 const { Mixin } = Shopware;
-const { dom } = Shopware.Utils;
+const { dom, types } = Shopware.Utils;
 
 /**
  * @sw-package framework
@@ -25,34 +26,26 @@ export default {
         Mixin.getByName('notification'),
     ],
 
-    props: {
-        mouseLocationsTracked: {
-            type: Number,
-            required: false,
-            default() {
-                return 3;
-            },
-        },
-        subMenuDelay: {
-            type: Number,
-            required: false,
-            default() {
-                return 150;
-            },
-        },
-    },
-
     data() {
         return {
-            subMenuTimer: null,
-            mouseLocations: [],
-            lastDelayLocation: null,
             activeEntry: null,
             isOffCanvasShown: false,
             isUserActionsActive: false,
+            flyoutEntries: [],
+            flyoutTitle: '',
+            flyoutColor: '',
+            flyoutCloseTimeoutId: null,
             subMenuOpen: false,
             scrollbarOffset: '',
             isUserLoading: true,
+            flyoutContentStyle: {
+                position: 'fixed',
+                top: '0px',
+                left: '0px',
+                zIndex: '1070',
+            },
+            flyoutReferenceElement: null,
+            flyoutAutoUpdateCleanup: null,
         };
     },
 
@@ -220,6 +213,16 @@ The admin menu only supports up to three levels of nesting.`,
         isExpanded() {
             this.toggleSidebar();
         },
+        flyoutEntries(entries) {
+            if (!entries.length) {
+                this.stopFlyoutAutoUpdate();
+                return;
+            }
+
+            this.$nextTick(() => {
+                this.startFlyoutAutoUpdate();
+            });
+        },
     },
 
     created() {
@@ -228,10 +231,12 @@ The admin menu only supports up to three levels of nesting.`,
 
     mounted() {
         this.mountedComponent();
+        document.addEventListener('click', this.onDocumentClickDismissFlyout, false);
     },
 
     beforeUnmount() {
-        document.removeEventListener('mousemove', this.onMouseMoveDocument.bind(this));
+        document.removeEventListener('click', this.onDocumentClickDismissFlyout, false);
+        this.cancelFlyoutClose();
 
         this.beforeUnmountedComponent();
     },
@@ -250,6 +255,7 @@ The admin menu only supports up to three levels of nesting.`,
 
         beforeUnmountedComponent() {
             Shopware.Utils.EventBus.off('sw-admin-menu/toggle-offcanvas', this.onToggleCanvas);
+            this.stopFlyoutAutoUpdate();
         },
 
         onToggleCanvas(state) {
@@ -285,8 +291,6 @@ The admin menu only supports up to three levels of nesting.`,
                 },
                 component: this,
             });
-
-            document.addEventListener('mousemove', this.onMouseMoveDocument.bind(this));
 
             this.addScrollbarOffset();
         },
@@ -345,7 +349,9 @@ The admin menu only supports up to three levels of nesting.`,
                     const mainMenuListItem = currentActiveElement.closest(
                         '.navigation-list-item__level-1.navigation-list-item__has-children',
                     );
-                    ignoreElementsList.push(mainMenuListItem.firstElementChild);
+                    if (mainMenuListItem?.firstElementChild) {
+                        ignoreElementsList.push(mainMenuListItem.firstElementChild);
+                    }
                 }
 
                 this.removeClassesFromElements(
@@ -357,9 +363,11 @@ The admin menu only supports up to three levels of nesting.`,
                     ['router-link-active'],
                     ignoreElementsList,
                 );
+                this.onFlyoutLeave();
             }
 
             this.isUserActionsActive = false;
+            this.flyoutEntries = [];
         },
 
         onToggleUserActions() {
@@ -403,39 +411,39 @@ The admin menu only supports up to three levels of nesting.`,
             this.scrollbarOffset = `-${offset}px`;
         },
 
-        onMouseMoveDocument(event) {
-            this.mouseLocations.push({
-                x: event.pageX,
-                y: event.pageY,
-            });
-
-            // Mouse locations array exceeds the configured threshold
-            if (this.mouseLocations.length > this.mouseLocationsTracked) {
-                this.mouseLocations.shift();
-            }
-        },
-
         onMenuItemClick(entry, eventTarget) {
+            // Same-tick as opening flyout: document listener must not close (see onDocumentClickDismissFlyout).
+            this._suppressDocumentFlyoutDismiss = true;
+
             const target = eventTarget.closest('.sw-admin-menu__navigation-list-item');
+            const isClickFromFlyout = Boolean(
+                eventTarget.closest('.sw-admin-menu_flyout-holder, .sw-admin-menu__flyout-floating-ui'),
+            );
             const level = entry.level;
 
-            if (!this.isExpanded) {
+            const hasChildrenClass = target.classList.contains('navigation-list-item__has-children');
+            const children = hasChildrenClass ? this.getChildren(entry) : [];
+
+            if (!this.isExpanded && !isClickFromFlyout) {
                 this.expandAdminMenu();
             }
 
-            // Clear previous delay of the menu
-            if (this.subMenuTimer) {
-                window.clearTimeout(this.subMenuTimer);
+            if (this.flyoutEntries.length) {
+                this.flyoutEntries = [];
+                this.flyoutTitle = '';
             }
 
-            if (level > 1 || !target.classList.contains('navigation-list-item__has-children')) {
+            if (level > 1 || !hasChildrenClass) {
                 return;
             }
 
             const firstChild = target.firstChild;
             this.removeClassesFromElements(
                 Array.from(this.$el.querySelectorAll('.sw-admin-menu__navigation-list-item')),
-                ['is--entry-expanded'],
+                [
+                    'is--entry-expanded',
+                    'is--flyout-expanded',
+                ],
                 [
                     target,
                     firstChild,
@@ -454,6 +462,150 @@ The admin menu only supports up to three levels of nesting.`,
 
                 target.classList.add('is--entry-expanded');
             }
+
+            target.classList.remove('is--flyout-expanded');
+        },
+
+        onMenuItemHover(entry, eventTarget) {
+            if (this.isExpanded) {
+                return;
+            }
+
+            this.cancelFlyoutClose();
+
+            const target = eventTarget.closest('.sw-admin-menu__navigation-list-item');
+
+            if (!target) {
+                return;
+            }
+
+            const hasChildrenClass = target.classList.contains('navigation-list-item__has-children');
+            const children = hasChildrenClass ? this.getChildren(entry) : [];
+
+            if (!hasChildrenClass || children.length === 0) {
+                this.onFlyoutLeave();
+                return;
+            }
+
+            const entryKey = entry.id || entry.path;
+            const active = this.activeEntry?.entry;
+            const activeKey = active ? active.id || active.path : null;
+
+            if (activeKey === entryKey && this.flyoutEntries.length > 0) {
+                return;
+            }
+
+            this.flyoutReferenceElement = target.querySelector('.sw-admin-menu__navigation-link') ?? target;
+            this.flyoutEntries = children;
+            this.flyoutTitle = this.getEntryLabel(entry);
+            this.deactivatePreviousMenuItem();
+            target.classList.add('is--flyout-enabled');
+
+            if (entry.level && entry.level > 1) {
+                const parentEntry = this.mainMenuEntries.find((item) => {
+                    return item.id === entry.parent || item.path === entry.parent;
+                });
+                this.flyoutColor = parentEntry?.color ?? entry.color ?? '';
+            } else {
+                this.flyoutColor = entry.color ?? '';
+            }
+
+            this.activeEntry = { entry, target, parentEntries: [] };
+        },
+
+        getVirtualFlyoutReference() {
+            if (!this.flyoutReferenceElement) {
+                return null;
+            }
+
+            return {
+                getBoundingClientRect: () => this.flyoutReferenceElement.getBoundingClientRect(),
+            };
+        },
+
+        startFlyoutAutoUpdate() {
+            const reference = this.getVirtualFlyoutReference();
+            const floating = this.$refs.flyoutContent;
+
+            if (!reference || !floating) {
+                return;
+            }
+
+            this.stopFlyoutAutoUpdate();
+
+            this.flyoutAutoUpdateCleanup = autoUpdate(reference, floating, () => {
+                computePosition(reference, floating, {
+                    placement: 'right-start',
+                    strategy: 'fixed',
+                    middleware: [
+                        offset(12),
+                        flip(),
+                    ],
+                }).then(({ x, y }) => {
+                    this.flyoutContentStyle = {
+                        ...this.flyoutContentStyle,
+                        left: `${x}px`,
+                        top: `${y}px`,
+                    };
+                });
+            }, {
+                layoutShift: false,
+            });
+        },
+
+        stopFlyoutAutoUpdate() {
+            if (this.flyoutAutoUpdateCleanup) {
+                this.flyoutAutoUpdateCleanup();
+                this.flyoutAutoUpdateCleanup = null;
+            }
+        },
+
+        onNavigationListMouseLeave(event) {
+            if (event.relatedTarget?.closest('.sw-admin-menu__flyout-content')) {
+                return;
+            }
+
+            this.scheduleFlyoutClose();
+        },
+
+        onFlyoutMouseLeave(event) {
+            if (event.relatedTarget?.closest('.sw-admin-menu__navigation-list')) {
+                return;
+            }
+
+            this.scheduleFlyoutClose();
+        },
+
+        scheduleFlyoutClose() {
+            if (this.isExpanded || !this.flyoutEntries.length) {
+                return;
+            }
+
+            this.cancelFlyoutClose();
+
+            this.flyoutCloseTimeoutId = window.setTimeout(() => {
+                this.onFlyoutLeave();
+            }, 180);
+        },
+
+        cancelFlyoutClose() {
+            if (this.flyoutCloseTimeoutId) {
+                clearTimeout(this.flyoutCloseTimeoutId);
+                this.flyoutCloseTimeoutId = null;
+            }
+        },
+
+        onDocumentClickDismissFlyout() {
+            if (this._suppressDocumentFlyoutDismiss) {
+                this._suppressDocumentFlyoutDismiss = false;
+                return;
+            }
+
+            if (!this.flyoutEntries.length || this.isExpanded) {
+                return;
+            }
+
+            this.onFlyoutLeave();
         },
 
         getChildren(entry) {
@@ -466,11 +618,20 @@ The admin menu only supports up to three levels of nesting.`,
             });
         },
 
+        onFlyoutLeave() {
+            this.cancelFlyoutClose();
+            this.deactivatePreviousMenuItem();
+            this.stopFlyoutAutoUpdate();
+            this.flyoutReferenceElement = null;
+            this.flyoutEntries = [];
+            this.flyoutTitle = '';
+        },
+
         deactivatePreviousMenuItem() {
             if (this.activeEntry && this.activeEntry.target) {
                 this.activeEntry.target.classList.remove('is--flyout-enabled');
             }
-            this.activeEntry = [];
+            this.activeEntry = null;
         },
 
         removeClassesFromElements(elements, classList, ignoreElementsList = []) {
@@ -480,6 +641,25 @@ The admin menu only supports up to three levels of nesting.`,
                 }
                 element.classList.remove(classList);
             });
+        },
+
+        isFirstPluginInMenuEntries(entry, menuEntries) {
+            const firstPluginEntry = menuEntries.find((menuEntry) => {
+                return menuEntry.moduleType === 'plugin';
+            });
+
+            if (!firstPluginEntry) {
+                return false;
+            }
+            return types.isEqual(entry, firstPluginEntry);
+        },
+
+        getEntryLabel(entry) {
+            if (entry.label instanceof Object) {
+                return entry.label.translated ? entry.label.label : this.$tc(entry.label.label);
+            }
+
+            return this.$tc(entry.label);
         },
     },
 };

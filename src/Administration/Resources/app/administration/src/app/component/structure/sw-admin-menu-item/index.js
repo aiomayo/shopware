@@ -1,4 +1,5 @@
 import template from './sw-admin-menu-item.html.twig';
+import './sw-admin-menu-item.scss';
 
 const { createId, types } = Shopware.Utils;
 
@@ -17,8 +18,7 @@ export default {
 
     emits: [
         'menu-item-click',
-        'menu-item-enter',
-        'sub-menu-item-enter',
+        'menu-item-hover',
     ],
 
     props: {
@@ -40,7 +40,7 @@ export default {
         },
         iconSize: {
             type: String,
-            default: '20px',
+            default: '16px',
             required: false,
         },
         collapsibleText: {
@@ -53,6 +53,11 @@ export default {
             type: Boolean,
             // eslint-disable-next-line vue/no-boolean-default
             default: true,
+            required: false,
+        },
+        isExpanded: {
+            type: Boolean,
+            default: false,
             required: false,
         },
         borderColor: {
@@ -114,6 +119,26 @@ export default {
                 return this.acl.can(child.privilege);
             });
         },
+
+        expandIcon() {
+            return this.isExpanded ? 'regular-chevron-up-xs' : 'regular-chevron-down-xs';
+        },
+
+        isFirstChild() {
+            if (!this.entry.parent) {
+                return false;
+            }
+            const siblings = this.$parent?.children || [];
+            return siblings.length > 0 && siblings[0]?.id === this.entry.id;
+        },
+
+        isLastChild() {
+            if (!this.entry.parent) {
+                return false;
+            }
+            const siblings = this.$parent?.children || [];
+            return siblings.length > 0 && siblings[siblings.length - 1]?.id === this.entry.id;
+        },
     },
 
     methods: {
@@ -168,7 +193,15 @@ export default {
 
             if (meta.$current) {
                 const matchingPaths = findRootEntry(meta.$current.path);
-                return matchingPaths.includes(path);
+                const isInPath = matchingPaths.includes(path);
+
+                // If this item has children and is expanded, don't show as active
+                // (let the child show as active instead)
+                if (isInPath && this.children.length > 0 && this.isExpanded) {
+                    return false;
+                }
+
+                return isInPath;
             }
 
             if (meta.parentPath) {
@@ -184,7 +217,17 @@ export default {
             }
 
             if (this.entry.path) {
-                return compareTo ? compareTo.replace(/-/g, '.').indexOf(path.replace(/\.index/g, '')) === 0 : false;
+                const isActive = compareTo
+                    ? compareTo.replace(/-/g, '.').indexOf(path.replace(/\.index/g, '')) === 0
+                    : false;
+
+                // If this item has children and is expanded, don't show as active
+                // (let the child show as active instead)
+                if (isActive && this.children.length > 0 && this.isExpanded) {
+                    return false;
+                }
+
+                return isActive;
             }
 
             return this.entry.id === compareTo;
@@ -204,10 +247,6 @@ export default {
                 `navigation-list-item__level-${this.entry.level}`,
                 { 'navigation-list-item__has-children': hasChildren },
             ];
-        },
-
-        onSubMenuItemEnter(entry, $event, parentEntries) {
-            this.$emit('sub-menu-item-enter', entry, $event, parentEntries);
         },
 
         isFirstPluginInMenuEntries(entry, menuEntries) {

@@ -6,10 +6,10 @@
     :class="getElementClasses(entry.id || entryPath)"
     :style="{ 'border-color': borderColor }"
     :aria-current="subIsActive(entryPath, entry.id) ? 'page' : 'false'"
+    @mouseenter="$emit('menu-item-hover', entry, $event.target)"
     @click.prevent="$emit('menu-item-click', entry, $event.target)"
     @keydown.enter="$emit('menu-item-click', entry, $event.target)"
     @keydown.space="$emit('menu-item-click', entry, $event.target)"
-    @mouseenter="$emit('menu-item-enter', entry, $event, parentEntries)"
 >
 
     {% block sw_admin_menu_item_router_link %}
@@ -26,7 +26,6 @@
             :size="iconSize"
             class="sw-admin-menu__navigation-link-icon"
             :name="getIconName(entry.icon)"
-            :style="{ 'color': entry.color }"
         />
         {% endblock %}
 
@@ -68,7 +67,6 @@
             :size="iconSize"
             class="sw-admin-menu__navigation-link-icon"
             :name="getIconName(entry.icon)"
-            :style="{ 'color': entry.color }"
         />
         {% endblock %}
 
@@ -108,7 +106,6 @@
             :size="iconSize"
             class="sw-admin-menu__navigation-link-icon"
             :name="getIconName(entry.icon)"
-            :style="{ 'color': entry.color }"
         />
         {% endblock %}
 
@@ -130,6 +127,15 @@
             name="regular-chevron-right"
             size="8"
             class="sw-admin-menu__navigation-link-icon-arrow"
+        />
+        {% endblock %}
+
+        {% block sw_admin_menu_item_expand_indicator %}
+        <mt-icon
+            v-if="children.length"
+            :name="expandIcon"
+            size="8"
+            class="sw-admin-menu__navigation-link-expand-icon collapsible-text"
         />
         {% endblock %}
     </span>
@@ -158,7 +164,7 @@
                 :entry="entry"
                 :border-color="borderColor"
                 :display-icon="false"
-                @menu-item-enter="onSubMenuItemEnter"
+                :collapsible-text="collapsibleText"
             />
         </template>
     </ul>
