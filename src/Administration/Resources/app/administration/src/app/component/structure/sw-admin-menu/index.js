@@ -421,6 +421,11 @@ The admin menu only supports up to three levels of nesting.`,
             const hasChildrenClass = target.classList.contains('navigation-list-item__has-children');
             const children = hasChildrenClass ? this.getChildren(entry) : [];
 
+            // In collapsed mode, child navigation is handled via flyout only.
+            if (!this.isExpanded) {
+                return;
+            }
+
             if (this.flyoutEntries.length) {
                 this.flyoutEntries = [];
                 this.flyoutTitle = '';
