@@ -416,17 +416,10 @@ The admin menu only supports up to three levels of nesting.`,
             this._suppressDocumentFlyoutDismiss = true;
 
             const target = eventTarget.closest('.sw-admin-menu__navigation-list-item');
-            const isClickFromFlyout = Boolean(
-                eventTarget.closest('.sw-admin-menu_flyout-holder, .sw-admin-menu__flyout-floating-ui'),
-            );
             const level = entry.level;
 
             const hasChildrenClass = target.classList.contains('navigation-list-item__has-children');
             const children = hasChildrenClass ? this.getChildren(entry) : [];
-
-            if (!this.isExpanded && !isClickFromFlyout) {
-                this.expandAdminMenu();
-            }
 
             if (this.flyoutEntries.length) {
                 this.flyoutEntries = [];
