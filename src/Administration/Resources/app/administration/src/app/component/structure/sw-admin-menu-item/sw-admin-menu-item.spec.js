@@ -74,6 +74,7 @@ async function createWrapper({ props = {}, privileges = [] } = {}) {
                     hasActiveSettingModules: aclService.hasActiveSettingModules,
                     state: aclService.state,
                 },
+                feature: {},
             },
         },
     });

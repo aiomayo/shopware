@@ -1,6 +1,5 @@
 import template from './sw-admin-menu.html.twig';
 import './sw-admin-menu.scss';
-import { computePosition, autoUpdate, offset, flip } from '@floating-ui/dom';
 
 const { Mixin } = Shopware;
 const { dom, types } = Shopware.Utils;
@@ -33,19 +32,11 @@ export default {
             isUserActionsActive: false,
             flyoutEntries: [],
             flyoutTitle: '',
-            flyoutColor: '',
             flyoutCloseTimeoutId: null,
-            subMenuOpen: false,
+
             scrollbarOffset: '',
             isUserLoading: true,
-            flyoutContentStyle: {
-                position: 'fixed',
-                top: '0px',
-                left: '0px',
-                zIndex: '1070',
-            },
             flyoutReferenceElement: null,
-            flyoutAutoUpdateCleanup: null,
         };
     },
 
@@ -141,10 +132,6 @@ The admin menu only supports up to three levels of nesting.`,
             return this.isExpanded ? 'regular-chevron-circle-left' : 'regular-chevron-circle-right';
         },
 
-        userActionsToggleIcon() {
-            return this.isUserActionsActive ? 'regular-chevron-down-xs' : 'regular-chevron-up-xs';
-        },
-
         scrollbarOffsetStyle() {
             return {
                 right: this.scrollbarOffset,
@@ -210,18 +197,17 @@ The admin menu only supports up to three levels of nesting.`,
     },
 
     watch: {
-        isExpanded() {
+        isExpanded(expandedNow) {
             this.toggleSidebar();
-        },
-        flyoutEntries(entries) {
-            if (!entries.length) {
-                this.stopFlyoutAutoUpdate();
-                return;
+            if (expandedNow) {
+                this.$nextTick(() => this.expandAncestorBranchesForCurrentRoute());
             }
-
-            this.$nextTick(() => {
-                this.startFlyoutAutoUpdate();
-            });
+        },
+        '$route.fullPath': {
+            handler() {
+                this.$nextTick(() => this.expandAncestorBranchesForCurrentRoute());
+            },
+            immediate: true,
         },
     },
 
@@ -231,11 +217,9 @@ The admin menu only supports up to three levels of nesting.`,
 
     mounted() {
         this.mountedComponent();
-        document.addEventListener('click', this.onDocumentClickDismissFlyout, false);
     },
 
     beforeUnmount() {
-        document.removeEventListener('click', this.onDocumentClickDismissFlyout, false);
         this.cancelFlyoutClose();
 
         this.beforeUnmountedComponent();
@@ -255,7 +239,6 @@ The admin menu only supports up to three levels of nesting.`,
 
         beforeUnmountedComponent() {
             Shopware.Utils.EventBus.off('sw-admin-menu/toggle-offcanvas', this.onToggleCanvas);
-            this.stopFlyoutAutoUpdate();
         },
 
         onToggleCanvas(state) {
@@ -318,10 +301,6 @@ The admin menu only supports up to three levels of nesting.`,
             }
         },
 
-        isActiveItem(menuItem) {
-            return this.isExpanded && menuItem.classList.contains('router-link-active');
-        },
-
         onToggleSidebar() {
             if (this.isExpanded) {
                 this.collapseAdminMenu();
@@ -335,11 +314,6 @@ The admin menu only supports up to three levels of nesting.`,
         toggleSidebar() {
             if (!this.isExpanded) {
                 this.adminMenuStore.clearExpandedMenuEntries();
-
-                this.removeClassesFromElements(
-                    Array.from(this.$el.querySelectorAll('.sw-admin-menu__navigation-list-item')),
-                    ['is--entry-expanded'],
-                );
 
                 const currentActiveElement = this.$el.querySelector('a.router-link-active');
                 const currentActiveParentElement = currentActiveElement?.parentElement;
@@ -372,30 +346,6 @@ The admin menu only supports up to three levels of nesting.`,
             this.flyoutEntries = [];
         },
 
-        onToggleUserActions() {
-            if (this.isUserLoading) {
-                return false;
-            }
-            this.isUserActionsActive = !this.isUserActionsActive;
-            return true;
-        },
-
-        openUserActions() {
-            if (this.isExpanded || this.isUserLoading) {
-                return;
-            }
-
-            this.isUserActionsActive = true;
-        },
-
-        closeUserActions() {
-            if (this.isExpanded) {
-                return;
-            }
-
-            this.isUserActionsActive = false;
-        },
-
         onLogoutUser() {
             this.loginService.logout();
             this.adminMenuStore.clearExpandedMenuEntries();
@@ -408,23 +358,17 @@ The admin menu only supports up to three levels of nesting.`,
         },
 
         addScrollbarOffset() {
-            const offset = dom.getScrollbarWidth(this.$refs.swAdminMenuBody);
+            const scrollbarWidthPx = dom.getScrollbarWidth(this.$refs.swAdminMenuBody);
 
-            this.scrollbarOffset = `-${offset}px`;
+            this.scrollbarOffset = `-${scrollbarWidthPx}px`;
         },
 
         onMenuItemClick(entry, eventTarget) {
-            // Same-tick as opening flyout: document listener must not close (see onDocumentClickDismissFlyout).
-            this._suppressDocumentFlyoutDismiss = true;
-
-            const target = eventTarget.closest('.sw-admin-menu__navigation-list-item');
-            const level = entry.level;
-
-            const hasChildrenClass = target.classList.contains('navigation-list-item__has-children');
-            const children = hasChildrenClass ? this.getChildren(entry) : [];
-
-            // In collapsed mode, child navigation is handled via flyout only.
             if (!this.isExpanded) {
+                return;
+            }
+
+            if (eventTarget?.closest?.('.sw-admin-menu__sub-navigation-list')) {
                 return;
             }
 
@@ -432,38 +376,20 @@ The admin menu only supports up to three levels of nesting.`,
                 this.flyoutEntries = [];
                 this.flyoutTitle = '';
             }
+        },
 
-            if (level > 1 || !hasChildrenClass) {
+        onMenuBranchToggle({ entry, open }) {
+            if (!this.isExpanded || !entry || entry.level !== 1) {
                 return;
             }
 
-            const firstChild = target.firstChild;
-            this.removeClassesFromElements(
-                Array.from(this.$el.querySelectorAll('.sw-admin-menu__navigation-list-item')),
-                [
-                    'is--entry-expanded',
-                    'is--flyout-expanded',
-                ],
-                [
-                    target,
-                    firstChild,
-                ],
-            );
-
-            const isEntryExpanded = target.classList.contains('is--entry-expanded');
-
-            if (isEntryExpanded) {
+            if (!open) {
                 this.adminMenuStore.collapseMenuEntry(entry);
-
-                firstChild.classList.remove('is--entry-expanded');
-            } else {
-                this.adminMenuStore.clearExpandedMenuEntries();
-                this.adminMenuStore.expandMenuEntry(entry);
-
-                target.classList.add('is--entry-expanded');
+                return;
             }
 
-            target.classList.remove('is--flyout-expanded');
+            this.adminMenuStore.clearExpandedMenuEntries();
+            this.adminMenuStore.expandMenuEntry(entry);
         },
 
         onMenuItemHover(entry, eventTarget) {
@@ -501,63 +427,7 @@ The admin menu only supports up to three levels of nesting.`,
             this.deactivatePreviousMenuItem();
             target.classList.add('is--flyout-enabled');
 
-            if (entry.level && entry.level > 1) {
-                const parentEntry = this.mainMenuEntries.find((item) => {
-                    return item.id === entry.parent || item.path === entry.parent;
-                });
-                this.flyoutColor = parentEntry?.color ?? entry.color ?? '';
-            } else {
-                this.flyoutColor = entry.color ?? '';
-            }
-
             this.activeEntry = { entry, target, parentEntries: [] };
-        },
-
-        getVirtualFlyoutReference() {
-            if (!this.flyoutReferenceElement) {
-                return null;
-            }
-
-            return {
-                getBoundingClientRect: () => this.flyoutReferenceElement.getBoundingClientRect(),
-            };
-        },
-
-        startFlyoutAutoUpdate() {
-            const reference = this.getVirtualFlyoutReference();
-            const floating = this.$refs.flyoutContent;
-
-            if (!reference || !floating) {
-                return;
-            }
-
-            this.stopFlyoutAutoUpdate();
-
-            this.flyoutAutoUpdateCleanup = autoUpdate(reference, floating, () => {
-                computePosition(reference, floating, {
-                    placement: 'right-start',
-                    strategy: 'fixed',
-                    middleware: [
-                        offset(12),
-                        flip(),
-                    ],
-                }).then(({ x, y }) => {
-                    this.flyoutContentStyle = {
-                        ...this.flyoutContentStyle,
-                        left: `${x}px`,
-                        top: `${y}px`,
-                    };
-                });
-            }, {
-                layoutShift: false,
-            });
-        },
-
-        stopFlyoutAutoUpdate() {
-            if (this.flyoutAutoUpdateCleanup) {
-                this.flyoutAutoUpdateCleanup();
-                this.flyoutAutoUpdateCleanup = null;
-            }
         },
 
         onNavigationListMouseLeave(event) {
@@ -595,19 +465,6 @@ The admin menu only supports up to three levels of nesting.`,
             }
         },
 
-        onDocumentClickDismissFlyout() {
-            if (this._suppressDocumentFlyoutDismiss) {
-                this._suppressDocumentFlyoutDismiss = false;
-                return;
-            }
-
-            if (!this.flyoutEntries.length || this.isExpanded) {
-                return;
-            }
-
-            this.onFlyoutLeave();
-        },
-
         getChildren(entry) {
             return entry.children.filter((child) => {
                 if (!child.privilege) {
@@ -618,10 +475,19 @@ The admin menu only supports up to three levels of nesting.`,
             });
         },
 
+        getSingleChildTooltipConfig(entry) {
+            const children = this.getChildren(entry);
+            const shouldShowTooltip = !this.isExpanded && children.length === 0;
+
+            return {
+                message: shouldShowTooltip ? this.getEntryLabel(entry) : '',
+                disabled: !shouldShowTooltip,
+            };
+        },
+
         onFlyoutLeave() {
             this.cancelFlyoutClose();
             this.deactivatePreviousMenuItem();
-            this.stopFlyoutAutoUpdate();
             this.flyoutReferenceElement = null;
             this.flyoutEntries = [];
             this.flyoutTitle = '';
@@ -660,6 +526,73 @@ The admin menu only supports up to three levels of nesting.`,
             }
 
             return this.$tc(entry.label);
+        },
+
+        expandAncestorBranchesForCurrentRoute() {
+            if (!this.isExpanded) {
+                return;
+            }
+
+            let navigationLeaf =
+                this.$route.meta && this.$route.meta.$current !== undefined && this.$route.meta.$current !== null
+                    ? this.$route.meta.$current
+                    : null;
+
+            if (!navigationLeaf && typeof this.$route.name === 'string') {
+                navigationLeaf =
+                    this.navigationEntries.find((navigationEntry) => navigationEntry.path === this.$route.name) ?? null;
+            }
+
+            if (!navigationLeaf) {
+                return;
+            }
+
+            const flatNavigation = this.navigationEntries;
+
+            const resolveNavigationParent = (child) => {
+                if (!child || !child.parent?.length) {
+                    return null;
+                }
+
+                return (
+                    flatNavigation.find((candidate) => candidate?.id !== undefined && candidate.id === child.parent) ??
+                    flatNavigation.find((candidate) => candidate?.path !== undefined && candidate.path === child.parent) ??
+                    null
+                );
+            };
+
+            const isTopLevelNavigationEntry = (candidate) =>
+                !!candidate &&
+                this.mainMenuEntries.some(
+                    (rootEntry) => (rootEntry?.id ?? rootEntry?.path) === (candidate?.id ?? candidate?.path),
+                );
+
+            let walker = navigationLeaf;
+
+            while (walker) {
+                const parentEntry = resolveNavigationParent(walker);
+
+                if (!parentEntry) {
+                    break;
+                }
+
+                if (isTopLevelNavigationEntry(parentEntry) && this.getChildren(parentEntry).length > 0) {
+                    if (!this.isNavigationEntryExpanded(parentEntry)) {
+                        this.adminMenuStore.expandMenuEntry(parentEntry);
+                    }
+                }
+
+                walker = parentEntry;
+            }
+        },
+
+        isNavigationEntryExpanded(entry) {
+            if (!entry) {
+                return false;
+            }
+
+            const key = entry.id ?? entry.path;
+            return this.adminMenuStore.expandedEntries.some((expanded) => (expanded.id ?? expanded.path) === key);
         },
     },
 };

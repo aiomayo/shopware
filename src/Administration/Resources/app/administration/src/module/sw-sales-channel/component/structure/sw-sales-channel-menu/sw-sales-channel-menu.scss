@@ -3,7 +3,12 @@
 
 .sw-sales-channel-menu {
     .sw-sales-channel-menu-domain-link {
-        margin-left: 16px;
+        width: var(--scale-size-24, 24px);
+        height: var(--scale-size-24, 24px);
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
         background: none;
         border: none;
         outline: none;
@@ -19,8 +24,14 @@
     }
 
     .sw-admin-menu__headline {
+        overflow: hidden;
+
         .sw-admin-menu__headline_text a {
             color: var(--color-text-secondary-default);
+            font-family: var(--font-family-body);
+            font-size: var(--font-size-xs);
+            font-weight: var(--font-weight-regular);
+            line-height: var(--font-line-height-xs);
             text-decoration: none;
         }
     }
@@ -61,6 +72,11 @@
             background: none;
         }
     }
+}
+
+.sw-admin-menu.is--collapsed .sw-sales-channel-menu .sw-admin-menu__headline {
+    padding: 0;
+    justify-content: center;
 }
 
 .is--collapsed .sw-sales-channel-menu {

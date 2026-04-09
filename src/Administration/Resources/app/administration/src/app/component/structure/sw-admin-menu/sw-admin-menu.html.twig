@@ -15,11 +15,39 @@
                 class="sw-admin-menu__header-logo"
                 role="img"
             ></div>
+
+            <button
+                v-if="!isExpanded"
+                type="button"
+                class="sw-admin-menu__header-logo-expand-button"
+                @click.stop="onToggleSidebar"
+            >
+                <mt-icon
+                    :name="sidebarCollapseIcon"
+                    size="16px"
+                />
+            </button>
         </div>
         {% endblock %}
 
         {% block sw_admin_menu_header_version %}
-        <sw-version class="collapsible-text" />
+        <sw-version
+            v-if="isExpanded"
+            class="collapsible-text sw-admin-menu__version"
+        />
+        {% endblock %}
+
+        {% block sw_admin_menu_header_toggle_sidebar %}
+        <button
+            v-if="isExpanded"
+            type="button"
+            @click.stop="onToggleSidebar"
+        >
+            <mt-icon
+                :name="sidebarCollapseIcon"
+                size="16px"
+            />
+        </button>
         {% endblock %}
     </div>
     {% endblock %}
@@ -58,14 +86,16 @@
                     {% block sw_admin_menu_navigation_main_items %}
                     <sw-admin-menu-item
                         v-for="(entry, index) in mainMenuEntries"
-                        :key="`${entry.id || entry.path}-${entry.children.length}`"
+                        :key="entry.id || entry.path"
+                        v-tooltip.right="getSingleChildTooltipConfig(entry)"
                         :tabindex="0"
-                        :class="{ 'is--entry-expanded': currentExpandedMenuEntries.includes(entry) }"
+                        :class="{ 'is--entry-expanded': isNavigationEntryExpanded(entry) }"
                         :sidebar-expanded="isExpanded"
-                        :is-expanded="currentExpandedMenuEntries.includes(entry)"
+                        :is-expanded="isNavigationEntryExpanded(entry)"
                         :entry="entry"
                         @menu-item-hover="onMenuItemHover"
                         @menu-item-click="onMenuItemClick"
+                        @branch-toggle="onMenuBranchToggle"
                     />
                     {% endblock %}
                 </ul>
@@ -75,23 +105,6 @@
         </div>
         {% endblock %}
     </div>
-    {% endblock %}
-
-    {% block sw_admin_menu_toggle_sidebar %}
-    <button
-        type="button"
-        class="sw-admin-menu__toggle"
-        @click.stop="onToggleSidebar"
-    >
-
-        {% block sw_admin_menu_toggle_sidebar_icon %}
-        <mt-icon
-            :name="sidebarCollapseIcon"
-            size="16px"
-        />
-        {% endblock %}
-
-    </button>
     {% endblock %}
 
     {% block sw_admin_menu_footer %}
@@ -136,7 +149,10 @@
                     {% endblock %}
 
                     {% block sw_admin_menu_user_actions_toggle_icon %}
-                    <div class="sw-admin-menu__user-actions-toggle-icon-wrapper">
+                    <div
+                        v-if="isExpanded"
+                        class="sw-admin-menu__user-actions-toggle-icon-wrapper"
+                    >
                         <mt-icon
                             name="regular-chevron-up-xxs"
                         />
@@ -169,13 +185,17 @@
     {% endblock %}
 
     {% block sw_admin_menu_flyout_transition %}
-    <Teleport to="body">
+    <mt-floating-ui
+        :is-opened="!isExpanded && flyoutEntries.length > 0"
+        :anchor-element="flyoutReferenceElement"
+        :floating-ui-options="{ placement: 'right-start' }"
+        :offset="12"
+        detached
+        @close="onFlyoutLeave"
+    >
         <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -->
         <div
-            v-if="!isExpanded && flyoutEntries.length"
-            ref="flyoutContent"
-            class="sw-admin-menu__flyout-content sw-admin-menu__flyout-floating-ui"
-            :style="flyoutContentStyle"
+            class="sw-admin-menu__flyout-content"
             @mouseenter="cancelFlyoutClose"
             @focusin="cancelFlyoutClose"
             @mouseleave="onFlyoutMouseLeave"
@@ -192,25 +212,21 @@
                 <!-- eslint-disable sw-deprecation-rules/no-twigjs-blocks -->
                 <template
                     v-for="entry in flyoutEntries"
-                    :key="`${entry.id || entry.path}-separator-${entry.children.length}`"
+                    :key="`${entry.id || entry.path}-${entry.children.length}`"
                 >
-                    <li
-                        v-if="isFirstPluginInMenuEntries(entry, flyoutEntries)"
-                        :style="{ 'border-color': flyoutColor }"
-                        class="sw-admin-menu__separator"
-                    ></li>
-
                     <sw-admin-menu-item
                         :entry="entry"
-                        :border-color="flyoutColor"
+                        :menu-depth="2"
+                        :sidebar-expanded="isExpanded"
                         :display-icon="false"
                         :collapsible-text="false"
                         @menu-item-click="onMenuItemClick"
+                        @branch-toggle="onMenuBranchToggle"
                     />
                 </template>
             </ul>
         </div>
-    </Teleport>
+    </mt-floating-ui>
     {% endblock %}
 </aside>
 {% endblock %}

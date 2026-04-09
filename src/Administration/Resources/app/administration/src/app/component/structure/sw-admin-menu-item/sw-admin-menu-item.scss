@@ -11,9 +11,16 @@
 .sw-admin-menu__navigation-link {
     color: var(--color-text-primary-default);
     display: flex;
-    align-items: baseline;
-    padding: var(--scale-size-10) var(--scale-size-10);
+    height: var(--scale-size-36);
+    align-items: center;
+    align-self: stretch;
+    justify-content: flex-start;
+    gap: var(--scale-size-10);
+    flex: 1;
+    min-width: 0;
+    padding: 0 var(--scale-size-6) 0 var(--scale-size-10);
     text-decoration: none;
+    text-align: left;
     font-size: var(--font-size-xs);
     line-height: var(--font-line-height-xs);
     cursor: pointer;
@@ -34,15 +41,44 @@
         @include truncate;
 
         flex-grow: 1;
+        text-align: left;
     }
 }
 
-.sw-admin-menu__navigation-link-icon {
-    width: 20px;
-    margin: 0 var(--scale-size-10) 0 0;
-    vertical-align: middle;
-    position: relative;
-    top: -2px;
+.sw-admin-menu__navigation-item-row button.sw-admin-menu__navigation-link {
+    text-align: left;
+    justify-content: flex-start;
+}
+
+.sw-admin-menu__navigation-item-row {
+    display: flex;
+    align-items: stretch;
+    gap: var(--scale-size-10);
+}
+
+.sw-admin-menu__navigation-submenu-expand {
+    align-self: center;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: var(--scale-size-24, 24px);
+    height: var(--scale-size-24, 24px);
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    border-radius: var(--border-radius-s);
+
+    &:focus-visible {
+        outline: 2px solid var(--color-border-brand-default);
+        outline-offset: 2px;
+    }
+
+    &:hover {
+        background: var(--color-interaction-secondary-hover);
+    }
 }
 
 .sw-admin-menu__navigation-link-icon-arrow {
@@ -54,9 +90,18 @@
 }
 
 .sw-admin-menu__navigation-link-expand-icon {
-    margin-left: auto;
     flex-shrink: 0;
     color: var(--color-text-primary-default);
+}
+
+.sw-admin-menu__navigation-link-expand-icon-box {
+    width: var(--scale-size-24, 24px);
+    height: var(--scale-size-24, 24px);
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-left: auto;
 }
 
 .sw-admin-menu__sub-navigation-list {
@@ -68,64 +113,101 @@
     overflow: hidden;
 
     .sw-admin-menu__navigation-link {
-        transition: all 0.35s cubic-bezier(0.5, 0.32, 0.01, 1);
+        transition: none;
     }
 }
 
-// Level 2 items: structure line inside the navigation link
-.navigation-list-item__level-2 {
-    > .sw-admin-menu__navigation-link {
-        padding-left: 32px;
-        position: relative;
+// ── Structure lines ──
+// Each nested link draws its own current line (::before) and indicator (::after).
+// Ancestor lines for level 3+ come from border-left on deeper sub-lists.
+$line-offset: 18px;
+$line-indent: 36px;
 
-        // Structure line (gray, always visible)
-        &::before {
-            content: '';
-            position: absolute;
-            left: 13px;
-            top: 0;
-            bottom: 0;
-            width: 1px;
-            background: var(--color-border-primary-default);
-            border-radius: 1px;
-        }
+// Ancestor lines: only on sub-lists inside nested items (level 3+ children)
+.navigation-list-item--nested > .sw-admin-menu__sub-navigation-list {
+    margin-left: $line-offset;
+    position: relative;
+    padding-left: $line-indent - $line-offset - 1px;
 
-        // Active state: thicker blue line on top of gray
-        &.router-link-active::after {
-            content: '';
-            position: absolute;
-            left: 12px;
-            top: var(--scale-size-14);
-            bottom: var(--scale-size-14);
-            width: 3px;
-            background: var(--color-icon-brand-default);
-            border-radius: 1px;
-            outline: 4px solid var(--color-background-brand-default);
-        }
+    &::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 1px;
+        background: var(--color-border-primary-default);
+        border-radius: 1px;
+    }
+}
 
-        // Hover state: show inner indicator in neutral gray
-        &:not(.router-link-active):hover::after {
-            content: '';
-            position: absolute;
-            left: 12px;
-            top: var(--scale-size-14);
-            bottom: var(--scale-size-14);
-            width: 3px;
-            background: var(--color-border-primary-default);
-            border-radius: 1px;
-            outline: 4px solid var(--color-background-brand-default);
-        }
+.navigation-list-item--nested > .sw-admin-menu__sub-navigation-list:has(
+    > .sw-admin-menu__navigation-list-item:last-child:not(.is--entry-expanded)
+)::before {
+    bottom: var(--scale-size-12);
+}
+
+// Current line + indicator on every nested link
+.navigation-list-item--nested > .sw-admin-menu__navigation-item-row > .sw-admin-menu__navigation-link {
+    padding-left: $line-indent;
+
+    &::before {
+        content: '';
+        position: absolute;
+        left: $line-offset;
+        top: 0;
+        bottom: 0;
+        width: 1px;
+        background: var(--color-border-primary-default);
+        border-radius: 1px;
     }
 
-    // First item active: gray line only bottom half
-    &:first-child > .sw-admin-menu__navigation-link.router-link-active::before {
+    &::after {
+        content: '';
+        position: absolute;
+        left: $line-offset - 1px;
         top: 50%;
+        transform: translateY(-50%);
+        width: 3px;
+        height: 16px;
+        border-radius: 5px;
+        opacity: 0;
+        pointer-events: none;
+        outline: 4px solid transparent;
     }
 
-    // Last item active: gray line only top half
-    &:last-child > .sw-admin-menu__navigation-link.router-link-active::before {
-        bottom: 50%;
+    &:not(.router-link-active):hover::after {
+        opacity: 1;
+        background: var(--color-border-primary-default);
+        outline-color: var(--color-interaction-secondary-hover);
     }
+
+    &.router-link-active::after {
+        opacity: 1;
+        background: var(--color-icon-brand-default);
+        outline-color: var(--color-background-brand-default);
+    }
+
+}
+
+.navigation-list-item--nested.is--child-active > .sw-admin-menu__navigation-item-row > .sw-admin-menu__navigation-link::after {
+    opacity: 1;
+    background: var(--color-border-primary-default);
+    outline-color: var(--color-elevation-surface-default);
+}
+
+.navigation-list-item--nested.is--child-active > .sw-admin-menu__navigation-item-row > .sw-admin-menu__navigation-link:hover::after {
+    outline-color: var(--color-interaction-secondary-hover);
+}
+
+.navigation-list-item--nested:first-child
+    > .sw-admin-menu__navigation-item-row
+    > .sw-admin-menu__navigation-link::before {
+    top: var(--scale-size-12);
+}
+
+.navigation-list-item--nested:last-child:not(.is--entry-expanded) > .sw-admin-menu__navigation-item-row > .sw-admin-menu__navigation-link::before {
+    bottom: var(--scale-size-12);
 }
 
 .sw-admin-menu__sub-navigation-headline {
@@ -135,12 +217,10 @@
     font-weight: bold;
 }
 
-// Keep level-1 active background in both expanded and collapsed modes
-.navigation-list-item__level-1 > .sw-admin-menu__navigation-link.router-link-active {
+.navigation-list-item__level-1 > .sw-admin-menu__navigation-item-row > .sw-admin-menu__navigation-link.router-link-active {
     background: var(--color-background-brand-default);
 }
 
-// Active menu item
 .sw-admin-menu__navigation-link.router-link-active {
     background: none;
     color: var(--color-icon-brand-default);
@@ -158,38 +238,13 @@
     background: var(--color-background-brand-default);
 }
 
-.sw-admin-menu__navigation-list-item.is--flyout-enabled > .sw-admin-menu__navigation-link {
+.sw-admin-menu__navigation-list-item.is--flyout-enabled
+    > .sw-admin-menu__navigation-item-row
+    > .sw-admin-menu__navigation-link {
     color: var(--color-text-primary-default);
     background: var(--color-interaction-secondary-hover);
 }
 
-// Separator between plugin & core entries
-.sw-admin-menu__separator {
-    display: none;
-    padding: 0 70px;
-}
-
-.sw-admin-menu__separator-line {
-    background: var(--color-border-secondary-default);
-    display: block;
-    width: 100%;
-    height: 0;
-    transition: all 0.35s cubic-bezier(0.5, 0.32, 0.01, 1);
-}
-
-.is--entry-expanded .sw-admin-menu__separator {
-    display: block;
-
-    .sw-admin-menu__separator-line {
-        height: 1px;
-    }
-}
-
-.sw-admin-menu__sub-navigation-list .sw-admin-menu__separator:first-child {
-    display: none;
-}
-
-// Entry is expanded (but not necessarily active)
 .sw-admin-menu__navigation-list-item.is--entry-expanded {
     background: none;
 
@@ -197,7 +252,7 @@
         color: var(--color-text-primary-default);
     }
 
-    & > .sw-admin-menu__navigation-link .collapsible-text {
+    & > .sw-admin-menu__navigation-item-row > .sw-admin-menu__navigation-link .collapsible-text {
         color: var(--color-text-primary-default);
     }
 
@@ -206,22 +261,15 @@
         display: block;
     }
 
-    // Hide all sub menus except the first level
     .sw-admin-menu__sub-navigation-list {
         display: none;
     }
 
-    // First level expanded
     & > .sw-admin-menu__sub-navigation-list {
         display: block;
     }
 
-    // Show level 3 when level 2 parent is expanded
-    .navigation-list-item__level-2.is--entry-expanded > .sw-admin-menu__sub-navigation-list {
+    .navigation-list-item--nested.is--entry-expanded > .sw-admin-menu__sub-navigation-list {
         display: block;
     }
-}
-
-.navigation-list-item__level-2 .sw-admin-menu__separator {
-    display: none;
 }
