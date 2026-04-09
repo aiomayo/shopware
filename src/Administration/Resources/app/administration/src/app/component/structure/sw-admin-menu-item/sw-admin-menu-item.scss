@@ -135,6 +135,11 @@
     font-weight: bold;
 }
 
+// Keep level-1 active background in both expanded and collapsed modes
+.navigation-list-item__level-1 > .sw-admin-menu__navigation-link.router-link-active {
+    background: var(--color-background-brand-default);
+}
+
 // Active menu item
 .sw-admin-menu__navigation-link.router-link-active {
     background: none;
@@ -147,6 +152,10 @@
     .sw-admin-menu__navigation-link-icon {
         color: var(--color-icon-brand-default);
     }
+}
+
+.sw-admin-menu__flyout-content .sw-admin-menu__navigation-link.router-link-active {
+    background: var(--color-background-brand-default);
 }
 
 .sw-admin-menu__navigation-list-item.is--flyout-enabled > .sw-admin-menu__navigation-link {
