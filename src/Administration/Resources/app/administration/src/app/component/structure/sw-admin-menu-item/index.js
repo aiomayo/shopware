@@ -158,7 +158,17 @@ export default {
             return this.acl.can(match.meta.privilege);
         },
 
-        getIconName(name) {
+        getIconName(name, isActive = false) {
+            if (isActive && typeof name === 'string') {
+                if (name.startsWith('regular-')) {
+                    return name.replace('regular-', 'solid-');
+                }
+
+                if (name.startsWith('icon/regular/')) {
+                    return name.replace('icon/regular/', 'icon/solid/');
+                }
+            }
+
             return `${name}`;
         },
 
