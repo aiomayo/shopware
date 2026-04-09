@@ -334,6 +334,8 @@ The admin menu only supports up to three levels of nesting.`,
 
         toggleSidebar() {
             if (!this.isExpanded) {
+                this.adminMenuStore.clearExpandedMenuEntries();
+
                 this.removeClassesFromElements(
                     Array.from(this.$el.querySelectorAll('.sw-admin-menu__navigation-list-item')),
                     ['is--entry-expanded'],
