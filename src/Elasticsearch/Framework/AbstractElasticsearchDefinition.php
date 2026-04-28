@@ -44,23 +44,26 @@ abstract class AbstractElasticsearchDefinition
         ],
     ];
 
-    final public const SEARCH_FIELD_WITH_LENGTH_NORM = [
-        'fields' => [
-            'search' => [
-                'type' => 'text',
-                'analyzer' => ElasticsearchFieldBuilder::ANALYZER_WHITESPACE,
-                'similarity' => ElasticsearchFieldBuilder::SIMILARITY_LENGTH_NORM,
-            ],
-            'ngram' => ['type' => 'text', 'analyzer' => ElasticsearchFieldBuilder::ANALYZER_NGRAM],
-        ],
-    ];
-
     final public const TECHNICAL_TERM_SEARCH_FIELD = [
         'fields' => [
             'search' => [
                 'type' => 'text',
                 'analyzer' => ElasticsearchFieldBuilder::ANALYZER_WHITESPACE_TECHNICAL_INDEX,
                 'search_analyzer' => ElasticsearchFieldBuilder::ANALYZER_WHITESPACE_TECHNICAL_SEARCH,
+            ],
+            'ngram' => ['type' => 'text', 'analyzer' => ElasticsearchFieldBuilder::ANALYZER_NGRAM],
+        ],
+    ];
+
+    /**
+     * @deprecated tag:v6.8.0 - reason:becomes-internal - Use {@see self::buildTextFieldConfig(lengthNorm: true)} instead.
+     */
+    final public const SEARCH_FIELD_WITH_LENGTH_NORM = [
+        'fields' => [
+            'search' => [
+                'type' => 'text',
+                'analyzer' => ElasticsearchFieldBuilder::ANALYZER_WHITESPACE,
+                'similarity' => ElasticsearchFieldBuilder::SIMILARITY_LENGTH_NORM,
             ],
             'ngram' => ['type' => 'text', 'analyzer' => ElasticsearchFieldBuilder::ANALYZER_NGRAM],
         ],
@@ -104,6 +107,16 @@ abstract class AbstractElasticsearchDefinition
     }
 
     /**
+     * @deprecated tag:v6.8.0 - reason:becomes-internal - Use {@see self::buildTextFieldConfig(lengthNorm: true)} instead.
+     *
+     * @return array<string, mixed>
+     */
+    protected static function getTextFieldWithLengthNormConfig(): array
+    {
+        return self::buildTextFieldConfig(lengthNorm: true);
+    }
+
+    /**
      * Returns text field config. Flags:
      * - `$withExact`: add an unanalyzed `exact` subfield for high-boost exact-token matching.
      * - `$technicalTerms`: route the `search` subfield through the `word_delimiter_graph`
@@ -120,7 +133,7 @@ abstract class AbstractElasticsearchDefinition
         $fieldConfig = $technicalTerms ? self::TECHNICAL_TERM_SEARCH_FIELD : self::SEARCH_FIELD;
 
         if ($lengthNorm) {
-            $fieldConfig['fields']['search']['similarity'] = 'sw_length_norm';
+            $fieldConfig['fields']['search']['similarity'] = ElasticsearchFieldBuilder::SIMILARITY_LENGTH_NORM;
         }
 
         if ($withExact) {
@@ -128,16 +141,5 @@ abstract class AbstractElasticsearchDefinition
         }
 
         return self::KEYWORD_FIELD + $fieldConfig;
-    }
-
-    /**
-     * Returns text field config with BM25 length normalization (b=0.75) for long-form text fields
-     * like description and metaDescription, where document length IS a relevance signal.
-     *
-     * @return array<string, mixed>
-     */
-    protected static function getTextFieldWithLengthNormConfig(): array
-    {
-        return self::KEYWORD_FIELD + self::SEARCH_FIELD_WITH_LENGTH_NORM;
     }
 }
