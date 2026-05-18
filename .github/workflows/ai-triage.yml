@@ -12,13 +12,6 @@ on:
         required: false
         type: boolean
         default: true
-  # Registers the workflow with GitHub so `gh workflow run --ref <branch>` works on
-  # any branch (workflow_dispatch is only discoverable after the workflow has run
-  # at least once or been merged to the default branch). Triggers on any push that
-  # touches this YAML file. Safe to keep long-term — it runs a 2-second no-op job.
-  push:
-    paths:
-      - '.github/workflows/ai-triage.yml'
 
 permissions:
   contents: read
@@ -32,24 +25,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  register:
-    # No-op job that gives GitHub a chance to register this workflow on first push.
-    # Once registered, `gh workflow run ai-triage.yml --ref <branch>` works.
-    if: github.event_name == 'push'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 2
-    steps:
-      - name: Acknowledge registration
-        run: |
-          echo "AI Triage workflow registered on branch ${{ github.ref_name }}."
-          echo "Trigger a real triage run via:"
-          echo "  gh workflow run ai-triage.yml \\"
-          echo "    --repo ${{ github.repository }} \\"
-          echo "    --ref ${{ github.ref_name }} \\"
-          echo "    -f issue_number=<N> -f dry_run=true"
-
   triage:
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
