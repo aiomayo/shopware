@@ -1,0 +1,118 @@
+name: AI Triage (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number to triage'
+        required: true
+        type: string
+      dry_run:
+        description: 'Dry run (output to artifact only, no comment)'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  issues: read
+  id-token: write
+
+concurrency:
+  # Codex OAuth refresh tokens are single-use — serialize all triage runs across
+  # all issues to avoid race-conditions that would invalidate the token.
+  group: ai-triage-codex-auth
+  cancel-in-progress: false
+
+jobs:
+  triage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      AI_TRIAGE_REPO: ${{ github.repository }}
+      AI_TRIAGE_VERBOSE: '1'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # 4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # 4
+        with:
+          node-version: '22'
+
+      - name: Install npm deps
+        working-directory: .github/bin/js/ai-triage
+        run: npm install
+
+      - name: Install Codex CLI v0.130.0
+        run: |
+          npm install -g @openai/codex@0.130.0
+          codex --version
+
+      - name: Restore Codex auth cache
+        id: codex-auth-restore
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: ~/.codex/auth.json
+          key: codex-auth-${{ runner.os }}-v1
+
+      - name: Bootstrap Codex auth (if cache miss)
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+        run: |
+          mkdir -p ~/.codex
+          if [ ! -s ~/.codex/auth.json ]; then
+            if [ -z "$CODEX_AUTH_JSON" ]; then
+              echo "::error::CODEX_AUTH_JSON secret is not set. Set it in repo Settings → Secrets and variables → Actions."
+              exit 1
+            fi
+            printf '%s' "$CODEX_AUTH_JSON" > ~/.codex/auth.json
+            echo "Bootstrapped ~/.codex/auth.json from CODEX_AUTH_JSON secret"
+          else
+            echo "Using cached ~/.codex/auth.json from previous run"
+          fi
+          codex login status
+
+      - name: Run triage
+        id: triage
+        working-directory: .github/bin/js/ai-triage
+        run: |
+          set -o pipefail
+          npx tsx triage.ts --issue-number "${{ inputs.issue_number }}" \
+            > triage-result.json 2> triage-stderr.log || {
+              echo "::error::triage failed — see triage-stderr.log artifact"
+              cat triage-stderr.log
+              exit 1
+            }
+          echo "--- triage-result.json ---"
+          cat triage-result.json
+
+      - name: Save Codex auth cache
+        if: always()
+        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: ~/.codex/auth.json
+          key: codex-auth-${{ runner.os }}-v1
+
+      - name: Upload result artifact
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # 6.0.0
+        with:
+          name: ai-triage-${{ inputs.issue_number }}-${{ github.run_id }}
+          path: |
+            .github/bin/js/ai-triage/triage-result.json
+            .github/bin/js/ai-triage/triage-stderr.log
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Summary
+        if: success()
+        run: |
+          echo "## AI Triage Result — Issue #${{ inputs.issue_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Dry-run mode: \`${{ inputs.dry_run }}\` (no comment posted)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          jq '.triage' .github/bin/js/ai-triage/triage-result.json >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

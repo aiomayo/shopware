@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TriageOutput",
+  "description": "Agentic triage output for a Shopware 6 GitHub bug issue.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "disposition",
+    "severity",
+    "suggested_labels",
+    "confidence",
+    "reasoning",
+    "evidence_quotes",
+    "duplicate_of",
+    "missing_template_fields",
+    "affected_paths",
+    "related_issues",
+    "related_prs",
+    "recent_commits_in_area",
+    "change_size_estimate"
+  ],
+  "properties": {
+    "disposition": {
+      "type": "string",
+      "enum": ["valid-bug", "duplicate", "needs-info", "not-a-bug", "feature-request"]
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["low", "medium", "high", "critical"]
+    },
+    "suggested_labels": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2,
+      "items": { "type": "string" }
+    },
+    "confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+    "reasoning": { "type": "string", "maxLength": 2000 },
+    "evidence_quotes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5,
+      "items": { "type": "string", "maxLength": 300 }
+    },
+    "duplicate_of": { "type": ["integer", "null"] },
+    "missing_template_fields": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "affected_paths": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "related_issues": {
+      "type": "array",
+      "items": { "type": "integer" }
+    },
+    "related_prs": {
+      "type": "array",
+      "items": { "type": "integer" }
+    },
+    "recent_commits_in_area": {
+      "type": "array",
+      "items": { "type": "string", "maxLength": 200 }
+    },
+    "change_size_estimate": {
+      "type": "string",
+      "enum": ["quick-fix", "small", "medium", "large", "unknown"]
+    }
+  }
+}
