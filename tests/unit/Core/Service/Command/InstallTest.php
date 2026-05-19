@@ -17,8 +17,6 @@ class InstallTest extends TestCase
     public function testCommandWhenNoServicesAreInstalled(): void
     {
         $manager = $this->createMock(LifecycleManager::class);
-        $manager->method('enabled')
-            ->willReturn(true);
         $manager->expects($this->once())->method('install')->willReturn([]);
 
         $command = new Install($manager);
@@ -28,24 +26,9 @@ class InstallTest extends TestCase
         static::assertStringContainsString('No services were installed', $tester->getDisplay());
     }
 
-    public function testCommandWhenServicesAreDisabled(): void
-    {
-        $manager = $this->createMock(LifecycleManager::class);
-        $manager->method('enabled')
-            ->willReturn(false);
-
-        $command = new Install($manager);
-        $tester = new CommandTester($command);
-        $tester->execute([]);
-
-        static::assertStringContainsString('Services are disabled. Please enable them to install services.', $tester->getDisplay());
-    }
-
     public function testCommandWritesListOfInstalledServices(): void
     {
         $manager = $this->createMock(LifecycleManager::class);
-        $manager->method('enabled')
-            ->willReturn(true);
         $manager->expects($this->once())->method('install')->willReturn([
             'MyCoolService1',
             'MyCoolService2',

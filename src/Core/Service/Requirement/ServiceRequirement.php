@@ -15,4 +15,6 @@ interface ServiceRequirement
     public static function getName(): string;
 
     public function isSatisfied(): bool;
+
+    public function isInstallable(): bool;
 }

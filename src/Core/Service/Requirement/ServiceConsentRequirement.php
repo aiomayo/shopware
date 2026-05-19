@@ -3,7 +3,9 @@
 namespace Shopware\Core\Service\Requirement;
 
 use Shopware\Core\Framework\Log\Package;
+use Shopware\Core\Service\LifecycleManager;
 use Shopware\Core\Service\Permission\PermissionsService;
+use Shopware\Core\System\SystemConfig\SystemConfigService;
 
 /**
  * @internal
@@ -15,6 +17,7 @@ class ServiceConsentRequirement implements ServiceRequirement
 
     public function __construct(
         private readonly PermissionsService $permissionsService,
+        private readonly SystemConfigService $systemConfigService,
     ) {
     }
 
@@ -26,5 +29,10 @@ class ServiceConsentRequirement implements ServiceRequirement
     public function isSatisfied(): bool
     {
         return $this->permissionsService->areGranted();
+    }
+
+    public function isInstallable(): bool
+    {
+        return !$this->systemConfigService->getBool(LifecycleManager::CONFIG_KEY_SERVICES_DISABLED);
     }
 }

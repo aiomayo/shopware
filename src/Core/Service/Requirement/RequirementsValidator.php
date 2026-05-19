@@ -42,6 +42,22 @@ class RequirementsValidator
     }
 
     /**
+     * Returns true only if all requirements allow the given service to be installed.
+     *
+     * @param list<string> $requirements
+     */
+    public function isInstallable(array $requirements): bool
+    {
+        foreach ($requirements as $name) {
+            if (!$this->requirements[$name]->isInstallable()) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
      * Returns true only if all requirements for the given service are satisfied.
      *
      * Unknown requirements are treated as unsatisfied; however, we already check that in ServiceLifecycle::install/update

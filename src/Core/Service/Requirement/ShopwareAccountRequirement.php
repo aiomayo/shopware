@@ -29,4 +29,9 @@ class ShopwareAccountRequirement implements ServiceRequirement
             'SELECT 1 FROM `user` WHERE `store_token` IS NOT NULL LIMIT 1'
         );
     }
+
+    public function isInstallable(): bool
+    {
+        return true;
+    }
 }

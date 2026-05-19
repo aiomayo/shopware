@@ -68,6 +68,26 @@ class RequirementsValidatorTest extends TestCase
         static::assertFalse($validator->isSatisfied($app));
     }
 
+    public function testIsInstallableReturnsTrueWhenAllRequirementsAllowInstallation(): void
+    {
+        $validator = new RequirementsValidator(new \ArrayIterator([
+            'service_consent' => $this->createRequirement(true),
+            'shopware_account' => $this->createRequirement(true),
+        ]));
+
+        static::assertTrue($validator->isInstallable(['service_consent', 'shopware_account']));
+    }
+
+    public function testIsInstallableReturnsFalseWhenAnyRequirementBlocksInstallation(): void
+    {
+        $validator = new RequirementsValidator(new \ArrayIterator([
+            'service_consent' => $this->createRequirement(true, false),
+            'shopware_account' => $this->createRequirement(true),
+        ]));
+
+        static::assertFalse($validator->isInstallable(['service_consent', 'shopware_account']));
+    }
+
     /**
      * @param list<string> $requirements
      */
@@ -96,11 +116,12 @@ class RequirementsValidatorTest extends TestCase
         return $app;
     }
 
-    private function createRequirement(bool $satisfied): ServiceRequirement
+    private function createRequirement(bool $satisfied, bool $installable = true): ServiceRequirement
     {
-        return new class($satisfied) implements ServiceRequirement {
+        return new class($satisfied, $installable) implements ServiceRequirement {
             public function __construct(
                 private readonly bool $satisfied,
+                private readonly bool $installable,
             ) {
             }
 
@@ -112,6 +133,11 @@ class RequirementsValidatorTest extends TestCase
             public function isSatisfied(): bool
             {
                 return $this->satisfied;
+            }
+
+            public function isInstallable(): bool
+            {
+                return $this->installable;
             }
         };
     }

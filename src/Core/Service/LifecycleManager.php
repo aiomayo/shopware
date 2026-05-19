@@ -13,6 +13,7 @@ use Shopware\Core\Framework\DataAbstractionLayer\Search\Filter\EqualsFilter;
 use Shopware\Core\Framework\Log\Package;
 use Shopware\Core\Service\Permission\PermissionsService;
 use Shopware\Core\Service\Requirement\RequirementsValidator;
+use Shopware\Core\Service\Requirement\ServiceConsentRequirement;
 use Shopware\Core\Service\ServiceRegistry\Client;
 use Shopware\Core\System\SystemConfig\SystemConfigService;
 
@@ -20,10 +21,10 @@ use Shopware\Core\System\SystemConfig\SystemConfigService;
  * This class is responsible for managing the full lifecycle of self-managed services (apps).
  *
  * Services (As a unit) can have two states:
- * Disabled: No Service is usable, or installed.
- * Enabled: All the applications backing the services are installed.
+ * Disabled: Services requiring general service consent are not usable, or installed.
+ * Enabled: Service installation is gated by each service's requirements.
  *
- * Then, if enabled, each service can have two states:
+ * Then, once installed, each service can have two states:
  * Started: The service is running. The underlying application backing the service has all the required permissions.
  * Stopped: The service is not running. The underlying application backing the service is in a Pending Permission state.
  *
@@ -34,16 +35,12 @@ use Shopware\Core\System\SystemConfig\SystemConfigService;
 #[Package('framework')]
 class LifecycleManager
 {
-    public const AUTO_ENABLED = 'auto';
-
     public const CONFIG_KEY_SERVICES_DISABLED = 'core.services.disabled';
 
     /**
      * @param EntityRepository<AppCollection> $repository
      */
     public function __construct(
-        private readonly string $enabled,
-        private readonly string $appEnv,
         private readonly Privileges $privileges,
         private readonly SystemConfigService $systemConfigService,
         private readonly EntityRepository $repository,
@@ -56,16 +53,10 @@ class LifecycleManager
     }
 
     /**
-     * This method installs all services, only if Services (as a unit) are enabled.
-     *
      * @return array<string> The newly installed services
      */
     public function install(Context $context): array
     {
-        if (!$this->enabled()) {
-            return [];
-        }
-
         return $this->serviceInstaller->install($context);
     }
 
@@ -103,11 +94,8 @@ class LifecycleManager
      */
     public function syncRequirement(string $requirementName, Context $context): void
     {
-        foreach ($this->getAllServices($context) as $app) {
-            $requirements = $this->getRequirements($app);
-            if (\in_array($requirementName, $requirements, true)) {
-                $this->syncPrivileges($app, $context);
-            }
+        foreach ($this->getServicesWithRequirement($requirementName, $context) as $app) {
+            $this->syncPrivileges($app, $context);
         }
     }
 
@@ -123,21 +111,16 @@ class LifecycleManager
     }
 
     /**
-     * This method disables the services (as a unit), preventing any service from being installed or used.
+     * This method disables services that require general service consent.
      */
     public function disable(Context $context): void
     {
-        foreach ($this->getAllServices($context) as $service) {
+        foreach ($this->getServicesWithRequirement(ServiceConsentRequirement::NAME, $context) as $service) {
             $this->appLifecycle->delete($service->getName(), ['id' => $service->getId()], $context);
         }
 
         $this->permissionsService->revoke($context);
         $this->systemConfigService->set(self::CONFIG_KEY_SERVICES_DISABLED, true, null, true);
-    }
-
-    public function enabled(): bool
-    {
-        return !$this->areDisabledFromEnv() && !$this->areDisabledFromConfig();
     }
 
     private function removeOrphanedServices(AppCollection $services, Context $context): void
@@ -162,28 +145,19 @@ class LifecycleManager
         }
     }
 
-    private function areDisabledFromEnv(): bool
-    {
-        if ($this->enabled === self::AUTO_ENABLED) {
-            $enabled = $this->appEnv === 'prod';
-        } else {
-            $enabled = filter_var($this->enabled, \FILTER_VALIDATE_BOOLEAN);
-        }
-
-        return !$enabled;
-    }
-
-    private function areDisabledFromConfig(): bool
-    {
-        return $this->systemConfigService->getBool(self::CONFIG_KEY_SERVICES_DISABLED);
-    }
-
     private function getAllServices(Context $context): AppCollection
     {
         $criteria = new Criteria();
         $criteria->addFilter(new EqualsFilter('selfManaged', true));
 
         return $this->repository->search($criteria, $context)->getEntities();
+    }
+
+    private function getServicesWithRequirement(string $requirementName, Context $context): AppCollection
+    {
+        return $this->getAllServices($context)->filter(
+            fn (AppEntity $service): bool => \in_array($requirementName, $this->getRequirements($service), true)
+        );
     }
 
     /**

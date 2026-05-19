@@ -43,4 +43,14 @@ class ShopwareAccountRequirementTest extends TestCase
 
         static::assertFalse($requirement->isSatisfied());
     }
+
+    public function testIsInstallable(): void
+    {
+        $connection = $this->createMock(Connection::class);
+        $connection->expects($this->never())->method('fetchOne');
+
+        $requirement = new ShopwareAccountRequirement($connection);
+
+        static::assertTrue($requirement->isInstallable());
+    }
 }

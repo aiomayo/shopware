@@ -51,12 +51,6 @@ class ServiceLifecycle
 
     public function install(ServiceEntry $serviceEntry, Context $context): bool
     {
-        $appId = $this->getAppIdForAppWithSameNameAsService($serviceEntry, $context);
-
-        if ($appId) {
-            return $this->upgradeAppToService($appId, $serviceEntry, $context);
-        }
-
         try {
             $appInfo = $this->serviceClientFactory->newFor($serviceEntry)->latestAppInfo();
         } catch (ServiceException $e) {
@@ -70,6 +64,19 @@ class ServiceLifecycle
             $this->logger->debug(\sprintf('Cannot install service "%s" because of invalid requirements: "%s"', $serviceEntry->name, implode(', ', $appInfo->requirements)));
 
             return false;
+        }
+
+        // do not install releases blocked by their requirements
+        if (!$this->requirementsValidator->isInstallable($appInfo->requirements)) {
+            $this->logger->debug(\sprintf('Cannot install service "%s" because requirements are not installable: "%s"', $serviceEntry->name, implode(', ', $appInfo->requirements)));
+
+            return false;
+        }
+
+        $appId = $this->getAppIdForAppWithSameNameAsService($serviceEntry, $context);
+
+        if ($appId) {
+            return $this->upgradeAppToService($appId, $serviceEntry, $appInfo, $context);
         }
 
         try {
@@ -119,6 +126,24 @@ class ServiceLifecycle
             return false;
         }
 
+        return $this->updateService($serviceEntry, $app, $latestAppInfo, $context);
+    }
+
+    /**
+     * If a non-service app exists with the same name as the service, return its ID.
+     */
+    public function getAppIdForAppWithSameNameAsService(ServiceEntry $serviceEntry, Context $context): ?string
+    {
+        $criteria = new Criteria();
+        $criteria->addFilter(new EqualsFilter('name', $serviceEntry->name));
+        $criteria->addFilter(new EqualsFilter('selfManaged', false));
+        $criteria->setLimit(1);
+
+        return $this->appRepository->search($criteria, $context)->getEntities()->first()?->getId();
+    }
+
+    private function updateService(ServiceEntry $serviceEntry, AppEntity $app, AppInfo $latestAppInfo, Context $context): bool
+    {
         // if it's the same version, bail
         if ($app->getVersion() === $latestAppInfo->revision) {
             return true;
@@ -153,7 +178,7 @@ class ServiceLifecycle
             );
             $this->logger->debug(\sprintf('Installed service "%s"', $serviceEntry->name));
 
-            $this->eventDispatcher->dispatch(new ServiceUpdatedEvent($serviceName, $context));
+            $this->eventDispatcher->dispatch(new ServiceUpdatedEvent($serviceEntry->name, $context));
 
             return true;
         } catch (\Exception $e) {
@@ -161,19 +186,6 @@ class ServiceLifecycle
 
             return false;
         }
-    }
-
-    /**
-     * If a non-service app exists with the same name as the service, return its ID.
-     */
-    public function getAppIdForAppWithSameNameAsService(ServiceEntry $serviceEntry, Context $context): ?string
-    {
-        $criteria = new Criteria();
-        $criteria->addFilter(new EqualsFilter('name', $serviceEntry->name));
-        $criteria->addFilter(new EqualsFilter('selfManaged', false));
-        $criteria->setLimit(1);
-
-        return $this->appRepository->search($criteria, $context)->getEntities()->first()?->getId();
     }
 
     private function createManifest(string $manifestPath, string $host, AppInfo $appInfo): Manifest
@@ -196,7 +208,7 @@ class ServiceLifecycle
         return $this->appRepository->search($criteria, $context)->getEntities()->first();
     }
 
-    private function upgradeAppToService(string $appId, ServiceEntry $entry, Context $context): bool
+    private function upgradeAppToService(string $appId, ServiceEntry $entry, AppInfo $appInfo, Context $context): bool
     {
         $this->appRepository->update(
             [
@@ -211,7 +223,8 @@ class ServiceLifecycle
         // it was possibly disabled during the update process
         $this->appStateService->activateApp($appId, $context);
 
-        $result = $this->update($entry->name, $context);
+        $app = $this->loadServiceByName($entry->name, $context);
+        $result = $app !== null && $this->updateService($entry, $app, $appInfo, $context);
 
         if ($result) {
             return true;

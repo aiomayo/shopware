@@ -88,6 +88,7 @@ class ServiceLifecycleTest extends TestCase
         $this->eventDispatcher = $this->createMock(EventDispatcherInterface::class);
         $this->requirementsValidator = $this->createMock(RequirementsValidator::class);
         $this->requirementsValidator->method('isValidSet')->willReturn(true);
+        $this->requirementsValidator->method('isInstallable')->willReturn(true);
     }
 
     public function testInstallDoesNotLogErrorIfAppCannotBeDownloaded(): void
@@ -270,7 +271,7 @@ class ServiceLifecycleTest extends TestCase
 
         $this->serviceClient->expects($this->once())->method('latestAppInfo')->willReturn($this->appInfo);
         $this->serviceClientFactory->expects($this->once())->method('newFor')->with($this->entry)->willReturn($this->serviceClient);
-        $this->serviceRegistryClient->expects($this->once())->method('get')->with('MyCoolService')->willReturn($this->entry);
+        $this->serviceRegistryClient->expects($this->never())->method('get');
 
         $this->sourceResolver->expects($this->once())
             ->method('filesystemForVersion')
@@ -642,6 +643,49 @@ class ServiceLifecycleTest extends TestCase
             ->expects($this->once())
             ->method('debug')
             ->with('Cannot install service "MyCoolService" because of invalid requirements: "invalid_requirement"');
+
+        $lifecycle = new ServiceLifecycle(
+            $this->serviceRegistryClient,
+            $this->serviceClientFactory,
+            $this->appLifecycle,
+            $this->buildAppRepository(),
+            $this->logger,
+            $this->manifestFactory,
+            $this->sourceResolver,
+            $this->appState,
+            $this->eventDispatcher,
+            $requirementsValidator
+        );
+
+        static::assertFalse($lifecycle->install($this->entry, Context::createDefaultContext()));
+    }
+
+    public function testInstallReturnsFalseWhenRequirementsAreNotInstallable(): void
+    {
+        $this->serviceClient->expects($this->once())->method('latestAppInfo')->willReturn($this->appInfo);
+        $this->serviceClientFactory->expects($this->once())->method('newFor')->with($this->entry)->willReturn($this->serviceClient);
+
+        $requirementsValidator = $this->createMock(RequirementsValidator::class);
+        $requirementsValidator
+            ->expects($this->once())
+            ->method('isValidSet')
+            ->with(['service_consent'])
+            ->willReturn(true);
+        $requirementsValidator
+            ->expects($this->once())
+            ->method('isInstallable')
+            ->with(['service_consent'])
+            ->willReturn(false);
+
+        $this->sourceResolver->expects($this->never())->method('filesystemForVersion');
+        $this->manifestFactory->expects($this->never())->method('createFromXmlFile');
+        $this->appLifecycle->expects($this->never())->method('install');
+        $this->eventDispatcher->expects($this->never())->method('dispatch');
+
+        $this->logger
+            ->expects($this->once())
+            ->method('debug')
+            ->with('Cannot install service "MyCoolService" because requirements are not installable: "service_consent"');
 
         $lifecycle = new ServiceLifecycle(
             $this->serviceRegistryClient,
