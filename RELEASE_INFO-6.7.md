@@ -93,6 +93,15 @@ Pseudo-locales bypass Symfony Intl validation in `Language::validateLocale` and 
 
 ## Administration
 
+### Block renaming
+
+Due to misleading block names, the following blocks have been deprecated and will be removed in v6.8.0. Use the respective replacements instead:
+
+* `sw_settings_listing_option_base_smart_content` -> `sw_settings_listing_option_base_content`
+* `sw_settings_listing_option_base_smart_content_general_info` -> `sw_settings_listing_option_base_content_general_info`
+* `sw_settings_listing_option_base_smart_bar_actions_grid` -> `sw_settings_listing_option_base_content_criteria_grid`
+* `sw_settings_listing_option_base_smart_bar_actions_grid_delete_modal` -> `sw_settings_listing_option_base_content_delete_modal`
+
 ### Mail template preview is now sales-channel-aware and uses isolated HTML rendering
 
 The mail template detail page can now preview mails with the selected sales channel and its configured mail header and footer.
@@ -133,6 +142,16 @@ Also the checkbox field is now positionally aligned with the other components.
 When merchants rename a media file, its URL automatically updates so they can download it without issues.
 
 ## Storefront
+
+### Single-hit search redirect now matches EAN and manufacturer number
+
+The storefront search already redirected to the product detail page when a search term exactly matched a product's number and produced a single result.
+The same redirect now triggers when the term exactly matches the product's `ean` or `manufacturerNumber`.
+The condition still requires exactly one matching product, so listings with multiple hits remain unaffected.
+
+The set of fields that trigger the redirect is configurable via the `shopware.storefront.redirect_on_single_hit_fields` container parameter (defaults to `['productNumber', 'ean', 'manufacturerNumber']`).
+Any string-valued property declared on `ProductEntity` may be configured — unknown or non-string properties are skipped.
+Set the parameter to a narrower list (for example `['productNumber']`) to restore the previous behaviour.
 
 ## App System
 
