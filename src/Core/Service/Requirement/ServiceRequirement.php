@@ -7,7 +7,7 @@ use Shopware\Core\Framework\Log\Package;
 /**
  * @internal
  *
- * A requirement that must be met before a service's permissions can be granted.
+ * A requirement that controls whether a service can be installed and run.
  */
 #[Package('framework')]
 interface ServiceRequirement

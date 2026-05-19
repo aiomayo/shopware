@@ -6,6 +6,7 @@ use Psr\Log\LoggerInterface;
 use Shopware\Core\Framework\App\AppCollection;
 use Shopware\Core\Framework\App\AppException;
 use Shopware\Core\Framework\App\AppStateService;
+use Shopware\Core\Framework\App\AppStorage;
 use Shopware\Core\Framework\App\Lifecycle\AbstractAppLifecycle;
 use Shopware\Core\Framework\App\Lifecycle\Parameters\AppInstallParameters;
 use Shopware\Core\Framework\App\Lifecycle\Parameters\AppUpdateParameters;
@@ -13,9 +14,8 @@ use Shopware\Core\Framework\App\Manifest\Manifest;
 use Shopware\Core\Framework\App\Manifest\ManifestFactory;
 use Shopware\Core\Framework\Context;
 use Shopware\Core\Framework\DataAbstractionLayer\EntityRepository;
-use Shopware\Core\Framework\DataAbstractionLayer\Search\Criteria;
-use Shopware\Core\Framework\DataAbstractionLayer\Search\Filter\EqualsFilter;
 use Shopware\Core\Framework\Log\Package;
+use Shopware\Core\Service\DTO\Service;
 use Shopware\Core\Service\Event\ServiceInstalledEvent;
 use Shopware\Core\Service\Event\ServiceUpdatedEvent;
 use Shopware\Core\Service\Requirement\RequirementsValidator;
@@ -39,6 +39,7 @@ class ServiceLifecycle
         private readonly ServiceClientFactory $serviceClientFactory,
         private readonly AbstractAppLifecycle $appLifecycle,
         private readonly EntityRepository $appRepository,
+        private readonly AppStorage $appStorage,
         private readonly ServiceStorage $serviceStorage,
         private readonly LoggerInterface $logger,
         private readonly ManifestFactory $manifestFactory,
@@ -51,12 +52,6 @@ class ServiceLifecycle
 
     public function install(ServiceEntry $serviceEntry, Context $context): bool
     {
-        $appId = $this->getAppIdForAppWithSameNameAsService($serviceEntry, $context);
-
-        if ($appId) {
-            return $this->upgradeAppToService($appId, $serviceEntry, $context);
-        }
-
         try {
             $appInfo = $this->serviceClientFactory->newFor($serviceEntry)->latestAppInfo();
         } catch (ServiceException $e) {
@@ -65,11 +60,17 @@ class ServiceLifecycle
             return false;
         }
 
-        // do not install invalid releases
-        if (!$this->requirementsValidator->isValidSet($appInfo->requirements)) {
-            $this->logger->debug(\sprintf('Cannot install service "%s" because of invalid requirements: "%s"', $serviceEntry->name, implode(', ', $appInfo->requirements)));
+        // do not install releases blocked by unknown or unsatisfied requirements
+        if (!$this->requirementsValidator->isSatisfied($appInfo->requirements)) {
+            $this->logger->debug(\sprintf('Cannot install service "%s" because requirements are not satisfied: "%s"', $serviceEntry->name, implode(', ', $appInfo->requirements)));
 
             return false;
+        }
+
+        $appId = $this->appStorage->findByName($serviceEntry->name, $context)?->getId();
+
+        if ($appId) {
+            return $this->upgradeAppToService($appId, $serviceEntry, $appInfo, $context);
         }
 
         try {
@@ -119,14 +120,19 @@ class ServiceLifecycle
             return false;
         }
 
+        return $this->updateService($serviceEntry, $service, $latestAppInfo, $context);
+    }
+
+    private function updateService(ServiceEntry $serviceEntry, Service $service, AppInfo $latestAppInfo, Context $context): bool
+    {
         // if it's the same version, bail
         if ($service->version === $latestAppInfo->revision) {
             return true;
         }
 
-        // do not update invalid releases
-        if (!$this->requirementsValidator->isValidSet($latestAppInfo->requirements)) {
-            $this->logger->debug(\sprintf('Cannot update service "%s" because of invalid requirements: "%s"', $serviceEntry->name, implode(', ', $latestAppInfo->requirements)));
+        // do not update to releases blocked by unknown or unsatisfied requirements
+        if (!$this->requirementsValidator->isSatisfied($latestAppInfo->requirements)) {
+            $this->logger->debug(\sprintf('Cannot update service "%s" because requirements are not satisfied: "%s"', $serviceEntry->name, implode(', ', $latestAppInfo->requirements)));
 
             return false;
         }
@@ -153,7 +159,7 @@ class ServiceLifecycle
             );
             $this->logger->debug(\sprintf('Installed service "%s"', $serviceEntry->name));
 
-            $this->eventDispatcher->dispatch(new ServiceUpdatedEvent($serviceName, $context));
+            $this->eventDispatcher->dispatch(new ServiceUpdatedEvent($serviceEntry->name, $context));
 
             return true;
         } catch (\Exception $e) {
@@ -161,19 +167,6 @@ class ServiceLifecycle
 
             return false;
         }
-    }
-
-    /**
-     * If a non-service app exists with the same name as the service, return its ID.
-     */
-    public function getAppIdForAppWithSameNameAsService(ServiceEntry $serviceEntry, Context $context): ?string
-    {
-        $criteria = new Criteria();
-        $criteria->addFilter(new EqualsFilter('name', $serviceEntry->name));
-        $criteria->addFilter(new EqualsFilter('selfManaged', false));
-        $criteria->setLimit(1);
-
-        return $this->appRepository->search($criteria, $context)->getEntities()->first()?->getId();
     }
 
     private function createManifest(string $manifestPath, string $host, AppInfo $appInfo): Manifest
@@ -187,7 +180,7 @@ class ServiceLifecycle
         return $manifest;
     }
 
-    private function upgradeAppToService(string $appId, ServiceEntry $entry, Context $context): bool
+    private function upgradeAppToService(string $appId, ServiceEntry $entry, AppInfo $appInfo, Context $context): bool
     {
         $this->appRepository->update(
             [
@@ -202,7 +195,8 @@ class ServiceLifecycle
         // it was possibly disabled during the update process
         $this->appStateService->activateApp($appId, $context);
 
-        $result = $this->update($entry->name, $context);
+        $service = $this->serviceStorage->findByName($entry->name, $context);
+        $result = $service !== null && $this->updateService($entry, $service, $appInfo, $context);
 
         if ($result) {
             return true;

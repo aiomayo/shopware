@@ -13,13 +13,13 @@ use Shopware\Core\Service\ServiceRegistry\Client;
 use Shopware\Core\System\SystemConfig\SystemConfigService;
 
 /**
- * This class is responsible for managing the full lifecycle of self-managed services (apps).
+ * This class coordinates the lifecycle of self-managed services (apps).
  *
- * Services (As a unit) can have two states:
- * Disabled: No Service is usable, or installed.
- * Enabled: All the applications backing the services are installed.
+ * ENABLE_SERVICES is the global switch for service installation and updates. The persisted disabled state
+ * is modeled as a service requirement, so services whose requirements remain satisfied, such as
+ * Shopware Account-only services, keep running.
  *
- * Then, if enabled, each service can have two states:
+ * Installation and updates are gated by each service's requirements. Once installed, each service can have two states:
  * Started: The service is running. The underlying application backing the service has all the required permissions.
  * Stopped: The service is not running. The underlying application backing the service is in a Pending Permission state.
  *
@@ -33,8 +33,6 @@ class LifecycleManager
     public const CONFIG_KEY_SERVICES_DISABLED = 'core.services.disabled';
 
     public function __construct(
-        private readonly string $enabled,
-        private readonly string $appEnv,
         private readonly Privileges $privileges,
         private readonly SystemConfigService $systemConfigService,
         private readonly ServiceStorage $serviceStorage,
@@ -43,12 +41,12 @@ class LifecycleManager
         private readonly PermissionsService $permissionsService,
         private readonly Client $client,
         private readonly RequirementsValidator $requirementsValidator,
+        private readonly string $enabled = 'true',
+        private readonly string $appEnv = 'prod',
     ) {
     }
 
     /**
-     * This method installs all services, only if Services (as a unit) are enabled.
-     *
      * @return array<string> The newly installed services
      */
     public function install(Context $context): array
@@ -98,8 +96,7 @@ class LifecycleManager
     }
 
     /**
-     * This method enables the services (as aa unit), allowing them to be installed and later used.
-     * It also schedules the installation of all services.
+     * This method clears the persisted disabled state and schedules the installation of services.
      */
     public function enable(): void
     {
@@ -109,21 +106,30 @@ class LifecycleManager
     }
 
     /**
-     * This method disables the services (as a unit), preventing any service from being installed or used.
+     * This method disables services that no longer satisfy their requirements.
      */
     public function disable(Context $context): void
     {
+        $this->systemConfigService->set(self::CONFIG_KEY_SERVICES_DISABLED, true, null, true);
+
         foreach ($this->serviceStorage->findAll($context) as $service) {
+            if ($this->requirementsValidator->isSatisfied($service->requirements)) {
+                continue;
+            }
+
             $this->appLifecycle->delete($service->name, ['id' => $service->id], $context);
         }
 
         $this->permissionsService->revoke($context);
-        $this->systemConfigService->set(self::CONFIG_KEY_SERVICES_DISABLED, true, null, true);
     }
 
     public function enabled(): bool
     {
-        return !$this->areDisabledFromEnv() && !$this->areDisabledFromConfig();
+        if ($this->enabled === self::AUTO_ENABLED) {
+            return $this->appEnv === 'prod';
+        }
+
+        return (bool) filter_var($this->enabled, \FILTER_VALIDATE_BOOLEAN);
     }
 
     /**
@@ -149,21 +155,5 @@ class LifecycleManager
                 $this->appLifecycle->delete($service->name, ['id' => $service->id], $context);
             }
         }
-    }
-
-    private function areDisabledFromEnv(): bool
-    {
-        if ($this->enabled === self::AUTO_ENABLED) {
-            $enabled = $this->appEnv === 'prod';
-        } else {
-            $enabled = filter_var($this->enabled, \FILTER_VALIDATE_BOOLEAN);
-        }
-
-        return !$enabled;
-    }
-
-    private function areDisabledFromConfig(): bool
-    {
-        return $this->systemConfigService->getBool(self::CONFIG_KEY_SERVICES_DISABLED);
     }
 }

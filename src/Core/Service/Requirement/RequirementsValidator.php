@@ -24,24 +24,9 @@ class RequirementsValidator
     }
 
     /**
-     * @param list<string> $requirements
-     */
-    public function isValidSet(array $requirements): bool
-    {
-        foreach ($requirements as $requirement) {
-            if (!isset($this->requirements[$requirement])) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    /**
      * Returns true only if all requirements for the given service are satisfied.
      *
-     * Unknown requirements are treated as unsatisfied; however, we already check that in ServiceLifecycle::install/update
-     * so this code path should never execute.
+     * Unknown requirements are treated as unsatisfied.
      *
      * @param list<string> $requirementNames
      */

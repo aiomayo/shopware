@@ -13,25 +13,6 @@ use Shopware\Core\Service\Requirement\ServiceRequirement;
 #[CoversClass(RequirementsValidator::class)]
 class RequirementsValidatorTest extends TestCase
 {
-    public function testIsValidSetReturnsTrueWhenAllRequirementsAreKnown(): void
-    {
-        $validator = new RequirementsValidator(new \ArrayIterator([
-            'service_consent' => $this->createRequirement(true),
-            'shopware_account' => $this->createRequirement(true),
-        ]));
-
-        static::assertTrue($validator->isValidSet(['service_consent', 'shopware_account']));
-    }
-
-    public function testIsValidSetReturnsFalseWhenRequirementIsUnknown(): void
-    {
-        $validator = new RequirementsValidator(new \ArrayIterator([
-            'service_consent' => $this->createRequirement(true),
-        ]));
-
-        static::assertFalse($validator->isValidSet(['service_consent', 'unknown_requirement']));
-    }
-
     public function testIsSatisfiedReturnsTrueWhenAllMet(): void
     {
         $validator = new RequirementsValidator(new \ArrayIterator([
