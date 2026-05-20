@@ -14,7 +14,7 @@ Loaded by the triage agent on-demand when it needs the full tool catalogue. Cost
 ## Git history (cheap)
 
 - `git log --oneline -10 -- src/Core/Content/ImportExport/` — recent changes in an area
-- `git log --since="6 months ago" --oneline -- <path>` — changes in a timeframe
+- `git log --since="12 months ago" --oneline -- <path>` — changes in a timeframe
 - `git log --all --oneline --grep "filename extension"` — find commits matching a description
 - `git show <sha> --stat` — what changed in a specific commit (file list, not full diff)
 - `git blame -L 100,150 <file>` — who last touched specific lines (use sparingly)
