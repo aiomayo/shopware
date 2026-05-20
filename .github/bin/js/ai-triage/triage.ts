@@ -249,18 +249,19 @@ function buildChildEnv(engine: Engine, xdgDir: string): NodeJS.ProcessEnv {
  * field names have drifted across versions:
  *
  *   1. {role: "assistant", content: "<text>"}                      — flat string
- *   2. {type: "message", role: "assistant", content: [{text:...}]} — content-array
- *   3. {type: "complete", message: "<text>"}                       — terminal event
- *   4. {type: "text", text: "<text>"}                              — streaming text
+ *   2. {type: "text", part: {text: "<message>"}}                  — opencode 1.15.5 verified
+ *   3. {type: "message", role: "assistant", content: [{text:...}]} — content-array (legacy/future)
+ *   4. {type: "complete", message: "<text>"}                       — terminal event (legacy/future)
  *
- * Strategy: collect every matching event, return the LAST one. This is fragile —
- * if opencode 1.16 emits a new shape we don't recognise, we'd throw "no assistant
- * message found" loudly rather than silently misparse. When opencode publishes a
- * typed SDK or schema, replace this with a Zod-validated event union.
+ * Verified shape (opencode 1.15.5, captured 2026-05-20):
+ *   {"type":"text", "timestamp":..., "sessionID":"ses_...", "part":{"id":"prt_...",
+ *    "messageID":"msg_...", "sessionID":"...", "type":"text", "text":"<JSON output>",
+ *    "time":{...}}}
  *
- * Bound the candidate list (~bytes parsed) implicitly via opencode's own output
- * volume — the function does not impose a hard cap, but each candidate is a single
- * JSONL line so memory pressure is bounded by opencode's own behaviour.
+ * Strategy: collect every matching event, return the LAST one. If opencode emits
+ * a shape we don't recognise, we throw "no assistant message found" loudly
+ * rather than silently misparse. When opencode publishes a typed SDK or schema,
+ * replace this with a Zod-validated event union.
  */
 export function extractOpencodeFinalMessage(stdout: string): string {
   const candidates: string[] = [];
@@ -271,7 +272,17 @@ export function extractOpencodeFinalMessage(stdout: string): string {
     try { evt = JSON.parse(trimmed); } catch { continue; }
     if (typeof evt !== "object" || evt === null) continue;
     const rec = evt as Record<string, unknown>;
-    // Common shapes across opencode versions.
+
+    // Shape 1 (opencode 1.15.5 — VERIFIED): {type:"text", part:{type:"text", text:"..."}}.
+    if (rec["type"] === "text" && typeof rec["part"] === "object" && rec["part"] !== null) {
+      const part = rec["part"] as Record<string, unknown>;
+      if (typeof part["text"] === "string") {
+        candidates.push(part["text"]);
+        continue;
+      }
+    }
+    // Legacy / future shapes — kept as defensive fallbacks. Drop these once we have
+    // a stable opencode schema reference and pin against it.
     if (rec["role"] === "assistant" && typeof rec["content"] === "string") {
       candidates.push(rec["content"] as string);
     } else if (rec["type"] === "message" && rec["role"] === "assistant" && Array.isArray(rec["content"])) {
@@ -282,8 +293,6 @@ export function extractOpencodeFinalMessage(stdout: string): string {
       if (parts.length > 0) candidates.push(parts.join(""));
     } else if (rec["type"] === "complete" && typeof rec["message"] === "string") {
       candidates.push(rec["message"] as string);
-    } else if (rec["type"] === "text" && typeof rec["text"] === "string") {
-      candidates.push(rec["text"] as string);
     }
   }
   if (candidates.length === 0) {
