@@ -319,9 +319,10 @@ test("extractOpencodeFinalMessage: shape 3 — {type:'complete', message:string}
   assert.equal(extractOpencodeFinalMessage(stdout), "final");
 });
 
-test("extractOpencodeFinalMessage: shape 4 — {type:'text', text:string}", () => {
-  const stdout = '{"type":"text","text":"streamed text"}';
-  assert.equal(extractOpencodeFinalMessage(stdout), "streamed text");
+test("extractOpencodeFinalMessage: opencode 1.15.5 verified shape — {type:'text', part:{text}}", () => {
+  // Real shape from opencode 1.15.5 CI capture 2026-05-20.
+  const stdout = '{"type":"text","timestamp":1779276488,"sessionID":"ses_x","part":{"id":"prt_1","messageID":"msg_1","sessionID":"ses_x","type":"text","text":"final answer text","time":{"start":1779276487999}}}';
+  assert.equal(extractOpencodeFinalMessage(stdout), "final answer text");
 });
 
 test("extractOpencodeFinalMessage: last-candidate-wins rule", () => {
