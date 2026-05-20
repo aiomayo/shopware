@@ -1,4 +1,4 @@
-name: AI Triage (manual)
+name: AI Triage
 
 on:
   workflow_dispatch:
@@ -6,7 +6,21 @@ on:
       issue_number:
         description: 'Issue number to triage'
         required: true
-        type: string
+        type: number
+      engine:
+        description: 'Agent runtime (opencode is default; codex/claude for cross-engine eval)'
+        required: false
+        type: choice
+        default: opencode
+        options:
+          - opencode
+          - codex
+          - claude
+      debug:
+        description: 'Verbose mode (streams agent transcript to artifact; off by default to avoid PII leak)'
+        required: false
+        type: boolean
+        default: false
       dry_run:
         description: 'Dry run (output to artifact only, no comment)'
         required: false
@@ -16,90 +30,166 @@ on:
 permissions:
   contents: read
   issues: read
-  id-token: write
 
+# Per-issue concurrency: blocks the same issue from racing on itself, allows different
+# issues to triage in parallel. The previous OAuth-driven workflow-wide group is gone
+# because API keys are stateless.
 concurrency:
-  # Codex OAuth refresh tokens are single-use — serialize all triage runs across
-  # all issues to avoid race-conditions that would invalidate the token.
-  group: ai-triage-codex-auth
-  cancel-in-progress: false
+  group: ai-triage-${{ inputs.issue_number }}
+  cancel-in-progress: true
 
 jobs:
   triage:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # 8-minute job ceiling. AI_TRIAGE_TIMEOUT_MS=420000 (7 min) makes the engine timeout
+    # fire first so the wrapper's `finally { rmSync(xdgDir) }` cleanup runs and a clear
+    # "X timed out" error reaches the artifact — instead of the runner SIGKILL'ing the job.
+    timeout-minutes: 8
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       AI_TRIAGE_REPO: ${{ github.repository }}
-      AI_TRIAGE_VERBOSE: '1'
+      AI_TRIAGE_ENGINE: ${{ inputs.engine }}
+      AI_TRIAGE_VERBOSE: ${{ inputs.debug && '1' || '0' }}
+      AI_TRIAGE_TIMEOUT_MS: '420000'
+      # GH_TOKEN is NOT job-level — it's scoped to each run-triage step (the steps the
+      # agent actually needs gh in) so it's not present in env during `npm ci` postinstall
+      # scripts (supply-chain hardening).
     steps:
+      # Network egress allow-list — even if a prompt-injected agent tries to exfil,
+      # outbound HTTPS is restricted to the providers + GitHub + agent CLI dependencies.
+      - name: Harden runner
+        uses: step-security/harden-runner@002fdce3c6a235733a90a27c80493a3241e56863 # v2.13.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            api.openai.com:443
+            api.anthropic.com:443
+            objects.githubusercontent.com:443
+            github.com:443
+            codeload.github.com:443
+            registry.npmjs.org:443
+            models.dev:443
+            api.opencode.ai:443
+            cdn.growthbook.io:443
+
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # 4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Setup Node 22
-        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # 4
+      # `lts/*` always resolves to the current active Node LTS — no yearly maintenance.
+      - name: Setup Node LTS
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
         with:
-          node-version: '22'
+          node-version: 'lts/*'
 
-      - name: Install npm deps
+      # `npm ci --ignore-scripts` prevents agent-CLI postinstall scripts from running with
+      # any of the job's env (no GH_TOKEN reachable, no provider keys). The native binaries
+      # are then explicitly built in a follow-up step where we know exactly what runs.
+      - name: Install npm deps (no scripts)
         working-directory: .github/bin/js/ai-triage
-        run: npm install
+        run: npm ci --ignore-scripts
 
-      - name: Install Codex CLI v0.130.0
+      - name: Build agent CLI native binaries
+        working-directory: .github/bin/js/ai-triage
         run: |
-          npm install -g @openai/codex@0.130.0
-          codex --version
-
-      - name: Restore Codex auth cache
-        id: codex-auth-restore
-        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
-        with:
-          path: ~/.codex/auth.json
-          key: codex-auth-${{ runner.os }}-v1
-
-      - name: Bootstrap Codex auth (if cache miss)
-        env:
-          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
-        run: |
-          mkdir -p ~/.codex
-          if [ ! -s ~/.codex/auth.json ]; then
-            if [ -z "$CODEX_AUTH_JSON" ]; then
-              echo "::error::CODEX_AUTH_JSON secret is not set. Set it in repo Settings → Secrets and variables → Actions."
-              exit 1
-            fi
-            printf '%s' "$CODEX_AUTH_JSON" > ~/.codex/auth.json
-            echo "Bootstrapped ~/.codex/auth.json from CODEX_AUTH_JSON secret"
-          else
-            echo "Using cached ~/.codex/auth.json from previous run"
+          # Run the postinstall scripts of the agent CLIs explicitly, AFTER `npm ci` and
+          # WITHOUT any secrets in env. These scripts download/relink platform-specific
+          # native binaries.
+          if [ -f node_modules/opencode-ai/postinstall.mjs ]; then
+            node node_modules/opencode-ai/postinstall.mjs
           fi
-          codex login status
+          if [ -f node_modules/@anthropic-ai/claude-code/install.cjs ]; then
+            node node_modules/@anthropic-ai/claude-code/install.cjs || true
+          fi
 
-      - name: Run triage
-        id: triage
+      # Provider keys exported only on the relevant step. opencode is multi-provider — it
+      # picks the right key based on the model's `provider/` prefix, so it needs both keys
+      # reachable. codex is OpenAI-only, claude is Anthropic-only. Narrower env per step =
+      # smaller blast radius if the agent is prompt-injected.
+      #
+      # Secrets use the `QUALITY_INITIATIVE_` prefix so the namespace is visible at the
+      # repo Settings → Secrets level and the keys aren't repurposed for other things.
+      - name: Run triage (opencode, multi-provider)
+        if: inputs.engine == 'opencode'
         working-directory: .github/bin/js/ai-triage
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.QUALITY_INITIATIVE_OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.QUALITY_INITIATIVE_ANTHROPIC_API_KEY }}
+          # Default model: Anthropic Sonnet 4.6 via opencode (best triage quality in our
+          # local eval — confidence 0.97 vs 0.88 for OpenAI gpt-5.5 on issue #16599).
+          # Override via `gh variable set AI_TRIAGE_OPENCODE_MODEL --body 'openai/gpt-5.5'`
+          # once an OpenAI key is provisioned.
+          AI_TRIAGE_OPENCODE_MODEL: ${{ vars.AI_TRIAGE_OPENCODE_MODEL || 'anthropic/claude-sonnet-4-6' }}
         run: |
+          if [ -z "$OPENAI_API_KEY" ] && [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::error::opencode needs at least one of QUALITY_INITIATIVE_OPENAI_API_KEY or QUALITY_INITIATIVE_ANTHROPIC_API_KEY"
+            exit 1
+          fi
           set -o pipefail
-          npx tsx triage.ts --issue-number "${{ inputs.issue_number }}" \
+          npm run triage -- --issue-number "${{ inputs.issue_number }}" \
             > triage-result.json 2> triage-stderr.log || {
               echo "::error::triage failed — see triage-stderr.log artifact"
-              cat triage-stderr.log
+              tail -50 triage-stderr.log
               exit 1
             }
-          echo "--- triage-result.json ---"
-          cat triage-result.json
 
-      - name: Save Codex auth cache
+      - name: Run triage (codex, OpenAI)
+        if: inputs.engine == 'codex'
+        working-directory: .github/bin/js/ai-triage
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.QUALITY_INITIATIVE_OPENAI_API_KEY }}
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::error::QUALITY_INITIATIVE_OPENAI_API_KEY secret is required for engine=codex"
+            exit 1
+          fi
+          set -o pipefail
+          npm run triage -- --issue-number "${{ inputs.issue_number }}" \
+            > triage-result.json 2> triage-stderr.log || {
+              echo "::error::triage failed — see triage-stderr.log artifact"
+              tail -50 triage-stderr.log
+              exit 1
+            }
+
+      - name: Run triage (claude, Anthropic)
+        if: inputs.engine == 'claude'
+        working-directory: .github/bin/js/ai-triage
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.QUALITY_INITIATIVE_ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::error::QUALITY_INITIATIVE_ANTHROPIC_API_KEY secret is required for engine=claude"
+            exit 1
+          fi
+          set -o pipefail
+          npm run triage -- --issue-number "${{ inputs.issue_number }}" \
+            > triage-result.json 2> triage-stderr.log || {
+              echo "::error::triage failed — see triage-stderr.log artifact"
+              tail -50 triage-stderr.log
+              exit 1
+            }
+
+      # Defense in depth: even though the wrapper redacts the input, the agent's stdout
+      # can echo content from `gh issue view` calls (other issues' bodies/comments) or
+      # the agent's own reasoning. Run the same redactor over the captured outputs
+      # before they become a 14-day artifact.
+      - name: Redact PII from outputs
         if: always()
-        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
-        with:
-          path: ~/.codex/auth.json
-          key: codex-auth-${{ runner.os }}-v1
+        working-directory: .github/bin/js/ai-triage
+        run: |
+          for f in triage-result.json triage-stderr.log; do
+            if [ -f "$f" ]; then
+              node redact-stream.ts < "$f" > "$f.redacted" && mv "$f.redacted" "$f"
+            fi
+          done
 
       - name: Upload result artifact
         if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # 6.0.0
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: ai-triage-${{ inputs.issue_number }}-${{ github.run_id }}
+          name: ai-triage-${{ inputs.issue_number }}-${{ inputs.engine }}-${{ github.run_id }}
           path: |
             .github/bin/js/ai-triage/triage-result.json
             .github/bin/js/ai-triage/triage-stderr.log
@@ -109,9 +199,10 @@ jobs:
       - name: Summary
         if: success()
         run: |
-          echo "## AI Triage Result — Issue #${{ inputs.issue_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "## AI Triage Result — Issue #${{ inputs.issue_number }} (engine=${{ inputs.engine }})" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Dry-run mode: \`${{ inputs.dry_run }}\` (no comment posted)" >> $GITHUB_STEP_SUMMARY
+          echo "Debug mode: \`${{ inputs.debug }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```json' >> $GITHUB_STEP_SUMMARY
           jq '.triage' .github/bin/js/ai-triage/triage-result.json >> $GITHUB_STEP_SUMMARY
