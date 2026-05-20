@@ -85,7 +85,7 @@ The first three steps are mandatory for any plausible defect. Steps 4–5 are re
 
 2. **Identify the code area** (`rg`, `find`). Pick 2–4 keywords likely to be code identifiers (class names, method names, error strings, UI labels). Run `rg` in `src/`. The top-level directory (`src/Core/`, `src/Administration/`, `src/Storefront/`, `src/Elasticsearch/`) determines the **primary domain label** (see references/DOMAINS.md).
 
-3. **Check recent changes** (`git log`). Run `git log --oneline --since="6 months ago" -- <affected paths>`. Look for `fix:` or `revert:` commits, **especially those referencing the issue number (`#N`) in the message** — direct fix-PR references.
+3. **Check recent changes** (`git log`). Run `git log --oneline --since="12 months ago" -- <affected paths>`. Look for `fix:` or `revert:` commits, **especially those referencing the issue number (`#N`) in the message** — direct fix-PR references.
 
 4. **Search for duplicates / related fixes** (`gh`). Pick 2–3 distinctive title keywords. Run ONE good `gh issue list --search "<keywords>"` query, and (if a fix-commit surfaced in step 3) `gh pr view <pr-number>` to verify it closes this issue. Max ~5 `gh` calls total.
 

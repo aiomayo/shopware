@@ -74,6 +74,11 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Full history so the triage agent can run `git log --since="12 months ago" -- <path>`
+          # and find fix-PR commits referencing the issue number. The default shallow checkout
+          # (fetch-depth: 1) makes the entire "check recent changes" step a no-op.
+          fetch-depth: 0
 
       # `lts/*` always resolves to the current active Node LTS — no yearly maintenance.
       - name: Setup Node LTS
