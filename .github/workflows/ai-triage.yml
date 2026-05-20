@@ -126,7 +126,7 @@ jobs:
             exit 1
           fi
           set -o pipefail
-          npm run triage -- --issue-number "${{ inputs.issue_number }}" \
+          node triage.ts --issue-number "${{ inputs.issue_number }}" \
             > triage-result.json 2> triage-stderr.log || {
               echo "::error::triage failed — see triage-stderr.log artifact"
               tail -50 triage-stderr.log
@@ -145,7 +145,7 @@ jobs:
             exit 1
           fi
           set -o pipefail
-          npm run triage -- --issue-number "${{ inputs.issue_number }}" \
+          node triage.ts --issue-number "${{ inputs.issue_number }}" \
             > triage-result.json 2> triage-stderr.log || {
               echo "::error::triage failed — see triage-stderr.log artifact"
               tail -50 triage-stderr.log
@@ -164,7 +164,7 @@ jobs:
             exit 1
           fi
           set -o pipefail
-          npm run triage -- --issue-number "${{ inputs.issue_number }}" \
+          node triage.ts --issue-number "${{ inputs.issue_number }}" \
             > triage-result.json 2> triage-stderr.log || {
               echo "::error::triage failed — see triage-stderr.log artifact"
               tail -50 triage-stderr.log
