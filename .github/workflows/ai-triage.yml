@@ -126,6 +126,9 @@ jobs:
             exit 1
           fi
           set -o pipefail
+          # npm-script invocation prepends node_modules/.bin to PATH; node directly does not.
+          # Prepend explicitly so the wrapper's `spawn("opencode" / "codex" / "claude")` finds the binaries.
+          export PATH="$PWD/node_modules/.bin:$PATH"
           node triage.ts --issue-number "${{ inputs.issue_number }}" \
             > triage-result.json 2> triage-stderr.log || {
               echo "::error::triage failed — see triage-stderr.log artifact"
@@ -145,6 +148,9 @@ jobs:
             exit 1
           fi
           set -o pipefail
+          # npm-script invocation prepends node_modules/.bin to PATH; node directly does not.
+          # Prepend explicitly so the wrapper's `spawn("opencode" / "codex" / "claude")` finds the binaries.
+          export PATH="$PWD/node_modules/.bin:$PATH"
           node triage.ts --issue-number "${{ inputs.issue_number }}" \
             > triage-result.json 2> triage-stderr.log || {
               echo "::error::triage failed — see triage-stderr.log artifact"
@@ -164,6 +170,9 @@ jobs:
             exit 1
           fi
           set -o pipefail
+          # npm-script invocation prepends node_modules/.bin to PATH; node directly does not.
+          # Prepend explicitly so the wrapper's `spawn("opencode" / "codex" / "claude")` finds the binaries.
+          export PATH="$PWD/node_modules/.bin:$PATH"
           node triage.ts --issue-number "${{ inputs.issue_number }}" \
             > triage-result.json 2> triage-stderr.log || {
               echo "::error::triage failed — see triage-stderr.log artifact"
