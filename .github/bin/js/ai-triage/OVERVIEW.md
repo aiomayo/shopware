@@ -12,22 +12,24 @@ Four small, composable pieces:
 
 ```
    ┌───────────────────────────────────────────────────────────────┐
-   │  GitHub Action (manual / scheduled trigger)                    │
-   │     │                                                          │
-   │     ▼                                                          │
-   │  Node TS wrapper (.github/bin/js/<workflow>/triage.ts)         │
-   │     │   - validate input                                       │
-   │     │   - redact PII                                           │
-   │     │   - spawn `codex exec` in repo root                      │
-   │     │   - parse + Zod-validate the final JSON                  │
-   │     │   - print structured result                              │
-   │     ▼                                                          │
-   │  Codex CLI agent (gpt-5.5 via ChatGPT Business OAuth)   │
-   │     │   - reads `prompts/<task>.md` (the "skill")             │
-   │     │   - has full read access to repo + gh                    │
-   │     │   - loops through tools (rg, git, gh) until done         │
-   │     ▼                                                          │
-   │  Structured JSON output (validates against schemas/<task>.json) │
+   │  GitHub Action (manual / scheduled trigger)                   │
+   │     │                                                         │
+   │     ▼                                                         │
+   │  Node TS wrapper (.github/bin/js/<workflow>/triage.ts)        │
+   │     │   - validate input                                      │
+   │     │   - redact PII                                          │
+   │     │   - spawn the selected agentic CLI in repo root         │
+   │     │     (opencode | codex | claude — chosen via env)        │
+   │     │   - parse + Zod-validate the final JSON                 │
+   │     │   - print structured result                             │
+   │     ▼                                                         │
+   │  Agent runtime (default: opencode + anthropic/claude-sonnet-4-6│
+   │  via ANTHROPIC_API_KEY; swappable to Codex CLI or Claude Code) │
+   │     │   - reads `.claude/skills/<task>/SKILL.md` (the "skill") │
+   │     │   - has full read access to repo + gh                   │
+   │     │   - loops through tools (rg, git, gh) until done        │
+   │     ▼                                                         │
+   │  Structured JSON output (validates against schemas/<task>.json)│
    └───────────────────────────────────────────────────────────────┘
 ```
 
@@ -35,17 +37,17 @@ Everything else (eval suites, audit logs, comment posting, multi-model review) i
 
 ## How AI Triage works today
 
-1. A maintainer opens **Actions → AI Triage → Run workflow** and enters an issue number.
+1. A maintainer opens **Actions → AI Triage → Run workflow**, enters an issue number, and (optionally) picks an engine (`opencode` / `codex` / `claude`).
 2. The workflow:
-   - checks out the repo, installs Codex CLI, restores cached OAuth token
+   - checks out the repo, installs the selected agent runtime, checks the matching provider key is present
    - calls `gh api repos/.../issues/<N>` to fetch the issue
    - runs a PII redactor over the body (emails, IBANs, API keys, user paths)
-   - invokes `codex exec` with the implementer prompt and the issue JSON as input
-3. Codex investigates autonomously:
+   - invokes the selected agent with the implementer prompt and the issue JSON as input
+3. The agent investigates autonomously:
    - `rg` to find affected source files
    - `git log` to spot recent fixes in that area
    - `gh issue list` / `gh pr view` to check for duplicates and existing fix-PRs
-4. Codex emits a single JSON object: disposition, severity, suggested labels, confidence, affected paths, related PRs, evidence quotes, change-size estimate.
+4. The agent emits a single JSON object: disposition, severity, suggested labels, confidence, affected paths, related PRs, evidence quotes, change-size estimate.
 5. The workflow uploads the JSON as an artifact (14-day retention) and writes a markdown summary to the run page.
 
 **Today this is dry-run only** — the JSON is the deliverable. Comment posting, auto-labeling, and metric dashboards are explicitly deferred until the foundation is reviewed.
@@ -54,7 +56,7 @@ Everything else (eval suites, audit logs, comment posting, multi-model review) i
 
 | Environment | Trigger | Use case |
 |---|---|---|
-| **Local** (`npx tsx triage.ts`) | Manual CLI | Prompt iteration, eval-suite replay, debugging |
+| **Local** (`npm run triage`) | Manual CLI | Prompt iteration, eval-suite replay, debugging |
 | **GitHub Actions** (this workflow) | `workflow_dispatch` (manual) | Real triage on real issues, audit artifact retained |
 | **GitHub Actions** (planned) | `schedule` (nightly) | Re-triage `needs-triage` backlog |
 | **GitHub Actions** (planned, gated) | `issues.opened` filtered | Auto-triage on new issues, posting opt-in via dry_run=false |
@@ -76,10 +78,14 @@ Each new AI-assisted task is **a new skill folder + a new workflow**, reusing th
 └── ai-doc-sync/        ← future: flag stale docs after code changes
 ```
 
-Each folder contains the same shape: `triage.ts` (or task-specific entry), `prompts/<task>.md`, `schemas/<task>.json`. The shell-wrapper code that handles redaction, Codex spawning, JSON parsing, and Zod validation is candidate for extraction into a shared library once we have ≥ 2 use cases — for now it is duplicated intentionally to keep the PoC reviewable.
+Each task has two pieces in two locations:
+- **The skill** at `<repo-root>/.claude/skills/<task>/SKILL.md` (+ optional `references/`, `assets/`) — Agent Skills format, portable across Claude Code, opencode, Codex CLI, etc. Auto-loads in interactive runtimes when its `description` matches the user message.
+- **The wrapper** at `.github/bin/js/<task>-wrapper/` — a `triage.ts`-equivalent entry script, `skill/{input,output,prompt}.ts` adapters, optional engine-specific glue.
+
+Engine-spawn code (`runOpencode`, `runCodex`, `runClaude`, `spawnAndWait`, env handling) is task-agnostic and ready for extraction into a shared `lib/` once a second task lands. PII patterns and the prompt-assembly helpers are already in their own modules (`pii-patterns.ts`, `skill/prompt.ts`).
 
 **The skill is the prompt + schema.** Adding a new use case means:
-1. Write a new prompt in `prompts/<task>.md` (XML structure, role, tools, schema reference, examples).
+1. Write a new skill at `<repo-root>/.claude/skills/<task>/SKILL.md` with Agent Skills frontmatter (`name`, `description`) plus optional `references/`, `assets/`.
 2. Define the output JSON schema in `schemas/<task>.json` (mirror it in a Zod type in the entry script).
 3. Write a thin workflow YAML that calls it.
 
@@ -100,27 +106,29 @@ Each step expands write authority by one notch and earns the right to do so via 
 Practical implications:
 
 - The Codex sandbox mode (`workspace-write` with network) is already the right mode for code edits — we just do not yet emit any writes.
-- The same `prompts/` + `schemas/` shape works for "produce a diff" as it does for "produce a triage decision". The schema simply changes from a typed classification to a typed patch description.
+- The same `.claude/skills/<task>/` + `schemas/<task>.json` shape works for "produce a diff" as it does for "produce a triage decision". The schema simply changes from a typed classification to a typed patch description.
 - Branch-protection, `CODEOWNERS`, and required reviews are the **same gates a human contributor goes through**. We do not invent a new approval model for the agent — we plug it into the existing one and start it on the lowest-risk slot (draft PR with bot author).
 - Cross-model review (Anthropic Claude as second pair of eyes) becomes critical when write actions enter the loop. The same pipeline can route a draft Fix-PR back through a Reviewer skill before the agent flags it ready for human review.
 
 ## Why this approach
 
-- **Codex CLI brings the tools.** `rg`, `git`, `gh`, and the shell are already wired into a sandbox runtime. No MCP servers, no custom tool wrappers, no orchestration framework to maintain. The agent loops natively.
+- **The agent CLIs bring the tools.** `rg`, `git`, `gh`, and the shell are already wired into the runtime of every supported agent (opencode, codex, claude). No MCP servers, no custom tool wrappers, no orchestration framework to maintain. The agent loops natively.
+- **Provider-agnostic from day one.** The wrapper exposes an `AI_TRIAGE_ENGINE` switch (`opencode` | `codex` | `claude`). CI currently defaults to opencode + `anthropic/claude-sonnet-4-6` via `ANTHROPIC_API_KEY` (Sonnet 4.6 won the local eval at 0.97 confidence); the default flips to `openai/gpt-5.5` once an OpenAI key is provisioned by setting the `AI_TRIAGE_OPENCODE_MODEL` repo variable. Developers can run the same prompt locally with whichever CLI they already have logged in.
 - **The repo is the source of truth.** Prompts, schemas, and project-local agent rules (`AGENTS.md`) live in the repo. Changes go through PR review. No external config drift.
 - **Structured output is enforceable.** The JSON schema is shared between the prompt (instructs the model), the agent (constrains the answer), and the workflow (Zod-validates before downstream use). One source of truth, three consumers.
 - **Read-only in this iteration.** The first stage writes nothing on purpose — we validate the foundation against real issues before granting any write authority. Later stages (comment posting, label suggestions, auto-fix PRs, full-pipeline runs) are explicitly on the roadmap and will earn write authority progressively through gated approval mechanisms (dry-run defaults, human-in-the-loop on high-impact actions, multi-model review where applicable).
-- **Switchable.** Codex CLI is just one runtime. The same prompt and schema can drive `opencode`, Claude Code, or a direct Anthropic SDK call — the wrapper script is the only thing that changes.
-- **Auditable.** Every run leaves a JSON artifact and a workflow log. We can replay any decision later and trace what tools the agent used.
+- **Auditable.** Every run leaves a JSON artifact and a workflow log. We can replay any decision later and trace which engine, which model, and which tools the agent used.
 
 ## Limits and trade-offs
 
-- **OAuth token logistics.** Codex authenticates via ChatGPT Business OAuth, and refresh tokens are single-use. Parallel workflow runs would race and invalidate the token — the workflow therefore serializes all triage runs through one concurrency group. Tokens must be cached across runs (handled), and rotated periodically when the cache key changes.
+- **Provider keys are now first-class secrets.** `OPENAI_API_KEY` (for opencode/codex engines) and optionally `ANTHROPIC_API_KEY` (for the claude engine) live as repository secrets. They are stateless — no OAuth refresh race, no concurrency group needed, and parallel triage runs are safe.
 - **Confidence ≠ correctness.** The model is calibrated (a `0.95` is meaningfully higher than a `0.7`), but it is not infallible. The output is a suggestion. The downstream consumer is responsible for trusting it appropriately.
 - **No autonomous writes in this iteration.** The current stage is structured-output-only by design — we want to evaluate the agent's judgement against real issues before opening up write actions. Write authority (comments, labels, auto-fix PRs) will be introduced step by step in later iterations, each guarded by the appropriate approval mechanism for its blast radius.
-- **Cost is opaque inside the OAuth window.** ChatGPT Business OAuth does not expose per-call token cost. Once we move to API keys (post-PoC), we will surface this in the audit JSON.
-- **Sandbox network access.** The agent runs with `workspace-write` sandbox + network access enabled (required for `gh`). The prompt forbids writes; any accidental write lands in the ephemeral runner and is discarded. We do not run this against production data.
+- **Cost surfacing.** Both opencode and Codex CLI emit token usage in stderr; we currently do not parse it into the audit JSON. Adding `cost_usd_estimate` to the schema is on the planned-features list once we settle on a reporting model.
+- **Sandbox.** opencode and Codex CLI run with full network access (required for `gh`). Codex additionally enforces an OS-level Seatbelt/Landlock sandbox; opencode does not — for this read-only stage the ephemeral GitHub Actions runner is the isolation boundary. The prompt forbids writes; any accidental write lands in the runner and is discarded. We do not run this against production data.
+- **Tool-permission posture differs per engine.** Claude Code runs with a narrow allow-list (`Bash(rg:*),Bash(git:*),Bash(gh:*),Bash(find:*),Bash(head:*),Bash(tail:*),Read,Glob,Grep`). Codex CLI's `workspace-write` sandbox enforces file-write boundaries at OS level. **opencode runs with `--dangerously-skip-permissions`** — there is no per-tool allow-list in the opencode CLI. The defense lies one layer up: `step-security/harden-runner` blocks outbound HTTPS to anything outside the providers + GitHub + agent CLI registries; the ephemeral runner is the isolation boundary. When we move beyond read-only stages, this will need a stronger per-engine restriction.
 - **The model can be wrong about severity.** Severity reflects **technical impact**, not business priority. Shopware uses separate `priority/*` labels for urgency. The agent's `severity` field is one input among many for human triage.
+- **Prompt portability is not 100%.** Anthropic models prefer XML-structured prompts; OpenAI models prefer Markdown + JSON Schema. We use XML with structured sections, which both accept. Some engine-specific drift is expected when running cross-engine eval; the planned eval suite will quantify it.
 - **Prompt drift.** Prompts are versioned via Git but not via formal release. Changes go through normal PR review. Eval suites against ground-truth issues are the planned mitigation — they exist conceptually in the plan but are not yet built.
 
 ## What's next (planned, in order)
@@ -141,7 +149,7 @@ Each step here unlocks the next — we only proceed if the previous one is stabl
 
 When reviewing this PR, the questions worth asking are:
 
-- **Does the prompt match the rubric you would apply?** Skim `prompts/implementer.md` — the disposition taxonomy, severity rubric, and domain catalogue are the "policy" of this agent. They should reflect Shopware conventions.
+- **Does the skill match the rubric you would apply?** Skim `.claude/skills/triage/SKILL.md` and its `references/CLASSIFICATION.md` + `references/DOMAINS.md` — the disposition taxonomy, severity rubric, and domain catalogue are the "policy" of this agent. They should reflect Shopware conventions.
 - **Are the tools the right ones?** `rg`, `git`, `gh` — anything missing? Anything you would explicitly forbid?
 - **Is the output schema useful for what comes after?** If you want to consume this JSON downstream (dashboards, comment-bots, etc.), is the field set rich enough?
 - **Are the safety limits sufficient for *this* stage?** Read-only intent, dry-run default, single-flight concurrency. Later stages (comment posting, draft PRs, auto-fix) will each come with their own gates; what should this triage stage already enforce so the gates that follow are easier to add?

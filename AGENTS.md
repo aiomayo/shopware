@@ -42,6 +42,10 @@ shopware/
 - `/store-api/` - Store API (customer-facing, storefront)
 - `/api/_action/sync` - Sync API (bulk operations)
 
+## AI Skills
+
+This repo ships portable Agent Skills under `.claude/skills/`. They auto-load in Claude Code / opencode / Codex CLI when you start a session in this directory and mention the skill's trigger phrase (e.g. "triage issue #16599" loads the `triage` skill). See `.claude/skills/README.md` for the catalogue.
+
 ## Coding Guidelines
 
 **MANDATORY**: All code must follow the guidelines in `coding-guidelines/`.
