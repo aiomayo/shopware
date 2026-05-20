@@ -14,22 +14,58 @@
 
 import { z } from "zod";
 
+const MAX_EVIDENCE_QUOTE_LEN = 500;
+const MAX_RECENT_COMMIT_LEN = 200;
+const MAX_REASONING_LEN = 2000;
+
 export const TriageOutput = z.object({
   disposition: z.enum(["valid-bug", "duplicate", "needs-info", "not-a-bug", "feature-request"]),
   severity: z.enum(["low", "medium", "high", "critical"]),
   suggested_labels: z.array(z.string()).min(1).max(2),
   confidence: z.number().min(0).max(1),
-  reasoning: z.string().max(2000),
-  evidence_quotes: z.array(z.string().max(300)).min(1).max(5),
+  reasoning: z.string().max(MAX_REASONING_LEN),
+  evidence_quotes: z.array(z.string().max(MAX_EVIDENCE_QUOTE_LEN)).min(1).max(5),
   duplicate_of: z.number().nullable(),
   missing_template_fields: z.array(z.string()),
   affected_paths: z.array(z.string()),
   related_issues: z.array(z.number()),
   related_prs: z.array(z.number()),
-  recent_commits_in_area: z.array(z.string().max(200)),
+  recent_commits_in_area: z.array(z.string().max(MAX_RECENT_COMMIT_LEN)),
   change_size_estimate: z.enum(["quick-fix", "small", "medium", "large", "unknown"]),
 });
 export type TriageOutput = z.infer<typeof TriageOutput>;
+
+/**
+ * Lenient normalisation: truncate any string fields that exceed their schema cap
+ * before Zod validation. Engine-side enforcement (codex `--output-schema`, claude
+ * `--json-schema`) catches this at the model level for those engines, but opencode
+ * has no equivalent flag and occasionally overshoots. Truncating with a "…[truncated]"
+ * marker is strictly safer than failing the whole run for a non-critical overshoot.
+ *
+ * Mutates the input in place. Caller passes the parsed-but-not-validated JSON.
+ */
+export function truncateOversizedFields(parsed: unknown): void {
+  if (typeof parsed !== "object" || parsed === null) return;
+  const obj = parsed as Record<string, unknown>;
+
+  const SUFFIX = "…[truncated]"; // 12 chars in JS string-length
+  const truncate = (s: string, max: number): string =>
+    s.length <= max ? s : s.slice(0, max - SUFFIX.length) + SUFFIX;
+
+  if (typeof obj.reasoning === "string") {
+    obj.reasoning = truncate(obj.reasoning, MAX_REASONING_LEN);
+  }
+  if (Array.isArray(obj.evidence_quotes)) {
+    obj.evidence_quotes = obj.evidence_quotes.map((q) =>
+      typeof q === "string" ? truncate(q, MAX_EVIDENCE_QUOTE_LEN) : q,
+    );
+  }
+  if (Array.isArray(obj.recent_commits_in_area)) {
+    obj.recent_commits_in_area = obj.recent_commits_in_area.map((c) =>
+      typeof c === "string" ? truncate(c, MAX_RECENT_COMMIT_LEN) : c,
+    );
+  }
+}
 
 /**
  * Extract a JSON object from an agent's text response.

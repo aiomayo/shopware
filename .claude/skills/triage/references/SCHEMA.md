@@ -31,7 +31,7 @@ The strict JSON Schema is published at the URL in this skill's `output-schema-ur
 | `suggested_labels` | yes | 1–2 entries from references/DOMAINS.md |
 | `confidence` | yes | Number 0.0–1.0 (see calibration in CLASSIFICATION.md) |
 | `reasoning` | yes | 2–5 sentences, max 2000 chars, must reference shell findings |
-| `evidence_quotes` | yes | 1–5 verbatim spans, max 300 chars each |
+| `evidence_quotes` | yes | 1–5 verbatim spans, max 500 chars each (wrapper truncates overshoots) |
 | `duplicate_of` | yes | Issue-number integer if `disposition == "duplicate"`, else `null` |
 | `missing_template_fields` | yes | Informational — empty array if all template sections present |
 | `affected_paths` | yes | File paths you identified via `rg`/`find` (empty array if none found) |
