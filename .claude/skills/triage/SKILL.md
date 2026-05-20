@@ -27,18 +27,55 @@ You **cannot** label, close, assign, or comment on the issue. The JSON is the de
 
 ## Operating modes
 
-You may be invoked one of two ways. Detect which from whether an `<input_json>` block is present at the end of this message:
+You may be invoked one of two ways. **Detect mode from whether an `<input_json>` block appears at the end of this message.** The mode determines BOTH input handling AND output format — they are different.
 
-### Wrapper-fed (CI or `npm run triage`)
-- An `<input_json>` block appears below with `issue_id`, `title`, `body`, `labels`, `language_detected`, `template_fields`.
-- The `body` is already **PII-redacted** (`[REDACTED_*]` placeholders) — do not reconstruct redacted values.
-- Use the JSON verbatim. Skip to step 2 of the workflow.
+### Wrapper-fed mode (CI or `npm run triage`)
 
-### Interactive (Claude Code / opencode / Codex CLI in the repo)
-- No `<input_json>` block. The user named an issue (e.g. "triage #16599").
-- **Step 0** (additional): fetch the issue yourself — `gh issue view <N> --json number,title,body,labels,state`. `GH_REPO` is set in env (`shopware/shopware`); no `--repo` flag needed.
-- PII redaction is **not** applied — when you quote shell output in `evidence_quotes`, redact `[REDACTED_EMAIL]` / `[REDACTED_KEY]` / `[REDACTED_PII]` yourself (see references/TOOLS.md).
-- `template_fields` and `language_detected` are not pre-computed — work from `title` + `body` directly.
+**Signal:** an `<input_json>` block IS present at the end.
+
+- Input: the JSON block carries `issue_id`, `title`, `body`, `labels`, `language_detected`, `template_fields`. The `body` is already **PII-redacted** (`[REDACTED_*]` placeholders) — do not reconstruct redacted values. Use the JSON verbatim, skip to step 2 of the workflow.
+- **Output: emit ONE JSON object as your single final message. No preamble, no plan, no status update, no trailing prose. NO markdown code fence around the JSON.** The wrapper's parser expects this exact shape.
+
+### Interactive mode (Claude Code / opencode / Codex CLI in the repo)
+
+**Signal:** NO `<input_json>` block — the user typed something like "triage issue #16599".
+
+- Input: **Step 0** — fetch the issue yourself: `gh issue view <N> --json number,title,body,labels,state`. `GH_REPO` is set in env (`shopware/shopware`); no `--repo` flag needed. `template_fields` and `language_detected` are not pre-computed; work from `title` + `body` directly. **PII redaction is not applied** — quotes can include the raw text the user sees on their machine.
+- **Output: emit a human-readable Markdown summary as your final message. NO JSON, no code fence.** The user is reading your output in their terminal; a JSON blob is not useful.
+  
+  Use this Markdown structure:
+
+  ```
+  ## Triage — Issue #<N>: <one-line headline of the bug>
+  
+  | Field | Value |
+  |---|---|
+  | **Disposition** | `valid-bug` / `duplicate` / `needs-info` / `not-a-bug` / `feature-request` |
+  | **Severity** | low / medium / high / critical |
+  | **Confidence** | 0.XX |
+  | **Suggested labels** | `domain/...` |
+  | **Duplicate of** | #N (or "—" if none) |
+  | **Change size** | quick-fix / small / medium / large / unknown |
+  
+  ### Reasoning
+  
+  2–5 sentences referencing concrete paths, commit SHAs, related issue/PR numbers.
+  
+  ### Evidence
+  
+  - "verbatim span 1"
+  - "verbatim span 2"
+  
+  ### Related work
+  
+  - Affected paths: `src/Core/...`, `src/Administration/...`
+  - Related PRs: #16632, #16061
+  - Recent commits in area: `4cfe2b182ba fix: ...`
+  
+  ### Missing template fields
+  
+  - `expected_behaviour` (or "none" if all present)
+  ```
 
 ## Research workflow
 
@@ -54,13 +91,15 @@ The first three steps are mandatory for any plausible defect. Steps 4–5 are re
 
 5. **Estimate change-size.** Small contained file = `quick-fix` / `small`. Multiple subsystems = `medium`. Can't tell = `unknown` — don't guess.
 
-6. **Classify and emit JSON.** All `evidence_quotes` must come from the input OR verbatim shell output. Emit ONE JSON object as your last message.
+6. **Classify and emit output.** All quoted evidence must come from the input OR verbatim shell output. Emit your final message in the format the active mode requires (see "Operating modes" above).
 
 For the full tool catalogue, shell discipline, anti-patterns, and PII hygiene rules, see **references/TOOLS.md**.
 For disposition taxonomy, severity rubric, and confidence calibration, see **references/CLASSIFICATION.md**.
 For the domain label catalogue, see **references/DOMAINS.md**.
 
-## Output schema (summary)
+## Output schema (wrapper-fed mode only)
+
+The wrapper-fed mode emits the following JSON shape. Field rules and worked examples are in **references/SCHEMA.md** and **assets/examples.md**. The strict schema (authoritative) is at the URL in this skill's `output-schema-url` metadata, generated from a Zod source of truth in the wrapper.
 
 ```json
 {
@@ -69,7 +108,7 @@ For the domain label catalogue, see **references/DOMAINS.md**.
   "suggested_labels": ["domain/..."],
   "confidence": 0.0,
   "reasoning": "2-5 sentences referencing concrete paths, commit SHAs, related issue/PR numbers.",
-  "evidence_quotes": ["verbatim spans from the input or your shell output"],
+  "evidence_quotes": ["verbatim spans from the input or your shell output (max 500 chars each)"],
   "duplicate_of": null,
   "missing_template_fields": [],
   "affected_paths": [],
@@ -80,19 +119,21 @@ For the domain label catalogue, see **references/DOMAINS.md**.
 }
 ```
 
-Full field rules and 3 worked examples are in **references/SCHEMA.md** and **assets/examples.md**. The strict schema (authoritative) is at the URL in this skill's `output-schema-url` metadata, generated from a Zod source of truth in the wrapper.
+In **interactive mode** the same information is conveyed as Markdown (see "Operating modes" above) — no JSON.
 
 ## Anti-reward-hacking
 
 Be calibrated and honest:
 
-- Only list `affected_paths`, `related_prs`, `related_issues`, `recent_commits_in_area` that you actually observed in shell output this session. If you didn't run the tool that would surface them, leave the field empty.
-- Quote `evidence_quotes` verbatim from input or shell output — do not paraphrase. **In interactive mode**, redact PII (emails, keys, customer-identifying info) before quoting.
+- Only list affected paths, related PRs, related issues, recent commits in area that you actually observed in shell output this session. If you didn't run the tool that would surface them, leave the field empty.
+- Quote evidence verbatim from input or shell output — do not paraphrase. In wrapper-fed mode the input is pre-redacted; in interactive mode you see raw data.
 - A calibrated `0.55` beats an unjustified `0.90`. **If confidence ≥ 0.85 and your reasoning has no shell-tool evidence (no file paths, no SHAs, no issue refs), lower confidence by 0.15.**
-- If you skipped a research step, say so in `reasoning` (e.g. "Did not search duplicates: error message is unique"). Transparency lifts confidence; hidden gaps lower it.
-- If a shell command fails or times out, note that in `reasoning` and reduce confidence.
+- If you skipped a research step, say so in your reasoning (e.g. "Did not search duplicates: error message is unique"). Transparency lifts confidence; hidden gaps lower it.
+- If a shell command fails or times out, note that in your reasoning and reduce confidence.
 - Prefer hedged language ("based on the file at X", "the most likely affected path is Y") when evidence is partial.
 
 ## Final instruction
 
-Do your research using shell tools, then emit ONE JSON object matching the schema as your single final message. No preamble, no plan, no status update, no trailing prose. **No markdown code fence around the JSON.** The JSON object is your only output.
+Do your research using shell tools, then emit your final message in the format the active mode requires:
+- **Wrapper-fed mode** (`<input_json>` present): ONE JSON object, no preamble, no fence, no trailing prose. The JSON object is your only output.
+- **Interactive mode** (no `<input_json>`): a Markdown summary using the structure shown in "Operating modes" above. No JSON, no code fence.

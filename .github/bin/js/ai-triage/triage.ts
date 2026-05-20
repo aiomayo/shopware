@@ -51,7 +51,7 @@ import { z } from "zod";
 import { redactPii } from "./pii-patterns.ts";
 import { SkillInput, RawIssue, extractTemplateFields, detectLanguage } from "./skill/input.ts";
 import { formatPromptWithInput, stripFrontmatter } from "./skill/prompt.ts";
-import { TriageOutput, parseJsonFromText } from "./skill/output.ts";
+import { TriageOutput, parseJsonFromText, truncateOversizedFields } from "./skill/output.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -436,6 +436,8 @@ async function runEngine(skillPath: string, repoRoot: string, input: SkillInput)
     // When a second skill (ai-pr-review etc.) lands, the engine runners extract to lib/
     // unchanged, and that task's main() validates against its own Zod schema instead.
     const parsedJson = parseJsonFromText(finalText, engine);
+    // Lenient normalisation before strict Zod validation — see truncateOversizedFields docs.
+    truncateOversizedFields(parsedJson);
     const output = TriageOutput.parse(parsedJson);
     return { output, wallClockMs: Date.now() - start, engine };
   } finally {

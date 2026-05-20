@@ -44,7 +44,7 @@
       "type": "array",
       "items": {
         "type": "string",
-        "maxLength": 300
+        "maxLength": 500
       }
     },
     "duplicate_of": {

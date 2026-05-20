@@ -15,7 +15,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { redactPii } from "./pii-patterns.ts";
-import { parseJsonFromText } from "./skill/output.ts";
+import { parseJsonFromText, truncateOversizedFields, TriageOutput } from "./skill/output.ts";
 import { extractTemplateFields, detectLanguage, SkillInput } from "./skill/input.ts";
 import { stripFrontmatter, formatPromptWithInput } from "./skill/prompt.ts";
 import { extractOpencodeFinalMessage, parseEngine } from "./triage.ts";
@@ -366,6 +366,56 @@ test("parseEngine: case-insensitive", () => {
 
 test("parseEngine: invalid throws", () => {
   assert.throws(() => parseEngine("gemini"), /must be opencode\|codex\|claude/);
+});
+
+// ---- truncateOversizedFields --------------------------------------------
+
+test("truncateOversizedFields: truncates evidence_quotes > 500 chars", () => {
+  const overlong = "x".repeat(600);
+  const obj = { evidence_quotes: [overlong, "short"], reasoning: "ok" } as Record<string, unknown>;
+  truncateOversizedFields(obj);
+  const quotes = obj.evidence_quotes as string[];
+  assert.ok(quotes[0].length === 500, `got length ${quotes[0].length}`);
+  assert.match(quotes[0], /…\[truncated\]$/);
+  assert.equal(quotes[1], "short");
+});
+
+test("truncateOversizedFields: leaves under-cap quotes unchanged", () => {
+  const obj = { evidence_quotes: ["x".repeat(499)], reasoning: "x" } as Record<string, unknown>;
+  truncateOversizedFields(obj);
+  assert.equal((obj.evidence_quotes as string[])[0].length, 499);
+});
+
+test("truncateOversizedFields: truncates reasoning + recent_commits_in_area too", () => {
+  const obj = {
+    reasoning: "r".repeat(2500),
+    recent_commits_in_area: ["c".repeat(250)],
+    evidence_quotes: ["e"],
+  } as Record<string, unknown>;
+  truncateOversizedFields(obj);
+  assert.equal((obj.reasoning as string).length, 2000);
+  assert.equal((obj.recent_commits_in_area as string[])[0].length, 200);
+});
+
+test("truncateOversizedFields + Zod: oversized output now passes validation", () => {
+  const raw = {
+    disposition: "valid-bug",
+    severity: "medium",
+    suggested_labels: ["domain/admin"],
+    confidence: 0.8,
+    reasoning: "ok",
+    evidence_quotes: ["x".repeat(800)], // would fail Zod max(500)
+    duplicate_of: null,
+    missing_template_fields: [],
+    affected_paths: [],
+    related_issues: [],
+    related_prs: [],
+    recent_commits_in_area: [],
+    change_size_estimate: "small",
+  };
+  truncateOversizedFields(raw);
+  const parsed = TriageOutput.parse(raw); // no throw
+  assert.equal(parsed.evidence_quotes[0].length, 500);
 });
 
 // ---- skill/input: template-field extraction -----------------------------
