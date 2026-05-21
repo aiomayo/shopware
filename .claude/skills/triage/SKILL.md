@@ -8,9 +8,9 @@ description: >
   label, or assess a Shopware issue, when they reference an issue by number
   (e.g. "#16599"), or when a new issue arrives that needs an initial dispositioning.
 license: MIT
-allowed-tools: Bash(rg:*) Bash(git:*) Bash(gh:*) Bash(find:*) Bash(head:*) Bash(tail:*) Bash(ls:*) Read Glob Grep
+allowed-tools: Bash(rg:*) Bash(git log:*) Bash(git show:*) Bash(git diff:*) Bash(git blame:*) Bash(gh issue view:*) Bash(gh issue list:*) Bash(gh pr view:*) Bash(gh pr list:*) Bash(gh api repos/*/issues/*:*) Bash(gh api repos/*/pulls/*:*) Bash(find:*) Bash(ls:*) Read Glob Grep
 metadata:
-  output-schema-url: "https://github.com/shopware/shopware/blob/trunk/.github/bin/js/ai-triage/schemas/triage-output.schema.json"
+  output-schema-url: "https://raw.githubusercontent.com/shopware/shopware/trunk/.github/bin/js/ai-triage/schemas/triage-output.schema.json"
 ---
 
 # Shopware Issue Triage
@@ -128,6 +128,7 @@ Be calibrated and honest:
 - Only list affected paths, related PRs, related issues, recent commits in area that you actually observed in shell output this session. If you didn't run the tool that would surface them, leave the field empty.
 - Quote evidence verbatim from input or shell output — do not paraphrase. In wrapper-fed mode the input is pre-redacted; in interactive mode you see raw data.
 - A calibrated `0.55` beats an unjustified `0.90`. **If confidence ≥ 0.85 and your reasoning has no shell-tool evidence (no file paths, no SHAs, no issue refs), lower confidence by 0.15.**
+- **`change_size_estimate` requires actual file inspection.** Default to `unknown` if you only read the issue body — guessing `medium`/`large` from the description alone is reward-hacking the "look thorough" bias. `quick-fix` / `small` / `medium` / `large` are only justified after you've seen at least one affected file's structure (via `rg`/`Read`).
 - If you skipped a research step, say so in your reasoning (e.g. "Did not search duplicates: error message is unique"). Transparency lifts confidence; hidden gaps lower it.
 - If a shell command fails or times out, note that in your reasoning and reduce confidence.
 - Prefer hedged language ("based on the file at X", "the most likely affected path is Y") when evidence is partial.

@@ -19,15 +19,61 @@
 import { z } from "zod";
 
 // -- Raw issue (wrapper-side input contract; what `gh api` returns) -------
+//
+// Hard caps below cap LLM-input cost and DoS exposure:
+//   - `title` ≤ 500 chars (GitHub UI cap ~256; 500 = comfortable headroom)
+//   - `body`  ≤ 16 KiB  (GitHub allows up to 65 KiB; bigger bodies are
+//                         almost always log dumps that bloat token cost
+//                         without adding signal — truncate before redaction)
+//   - `labels` ≤ 50 entries × 100 chars each
+//
+// Truncation (rather than reject) is preferred: a 50 KB issue body with a
+// useful first sentence is still triageable; failing the run forces a human
+// to inspect for no defensive gain.
+
+export const MAX_BODY_LEN = 16 * 1024; // 16 KiB
+export const MAX_TITLE_LEN = 500;
+export const MAX_LABEL_LEN = 100;
+export const MAX_LABELS = 50;
 
 export const RawIssue = z.object({
-  issue_id: z.number(),
-  title: z.string(),
-  body: z.string().nullable(),
-  labels: z.array(z.string()),
-  state: z.string().optional(),
+  issue_id: z.number().int().positive(),
+  title: z.string().max(MAX_TITLE_LEN),
+  body: z.string().max(MAX_BODY_LEN).nullable(),
+  labels: z.array(z.string().max(MAX_LABEL_LEN)).max(MAX_LABELS),
+  state: z.string().max(50).optional(),
 });
 export type RawIssue = z.infer<typeof RawIssue>;
+
+/**
+ * Truncate raw input fields to the schema caps before Zod parsing. Bodies that
+ * exceed the cap are sliced and marked with `\n\n[truncated]` so the model sees
+ * the deletion. Labels are dropped above MAX_LABELS, individual labels above
+ * MAX_LABEL_LEN are sliced. Title is sliced.
+ *
+ * Returns a new object — does not mutate input. Caller uses RawIssue.parse() on
+ * the result to apply the strict schema.
+ */
+export function truncateRawIssueInput(raw: {
+  issue_id: unknown;
+  title: unknown;
+  body: unknown;
+  labels: unknown;
+  state?: unknown;
+}): unknown {
+  const trim = (s: string, max: number): string =>
+    s.length <= max ? s : s.slice(0, max - 16) + "\n\n[truncated]";
+  const out: Record<string, unknown> = {
+    issue_id: raw.issue_id,
+    title: typeof raw.title === "string" ? raw.title.slice(0, MAX_TITLE_LEN) : raw.title,
+    body: typeof raw.body === "string" ? trim(raw.body, MAX_BODY_LEN) : raw.body,
+    labels: Array.isArray(raw.labels)
+      ? raw.labels.slice(0, MAX_LABELS).map((l) => (typeof l === "string" ? l.slice(0, MAX_LABEL_LEN) : l))
+      : raw.labels,
+  };
+  if (raw.state !== undefined) out.state = raw.state;
+  return out;
+}
 
 // -- Template-field extraction (Shopware-issue-template specific) --------
 
@@ -91,11 +137,11 @@ export function detectLanguage(body: string | null): DetectedLanguage {
 // -- Skill input (what the agent receives in <input_json>, wrapper-fed) --
 
 export const SkillInput = z.object({
-  issue_id: z.number(),
-  title: z.string(),
-  body: z.string(),
-  labels: z.array(z.string()),
+  issue_id: z.number().int().positive(),
+  title: z.string().max(MAX_TITLE_LEN),
+  body: z.string().max(MAX_BODY_LEN),
+  labels: z.array(z.string().max(MAX_LABEL_LEN)).max(MAX_LABELS),
   language_detected: DetectedLanguage,
   template_fields: TemplateFields,
-});
+}).strict();
 export type SkillInput = z.infer<typeof SkillInput>;

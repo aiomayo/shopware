@@ -25,7 +25,7 @@ The skill content (markdown + frontmatter + references) is the **source of truth
 - Node 22 LTS+ with native TypeScript execution (no transpiler).
 - Strict mode. `pnpm`/`npm` scripts live in `package.json` (`triage`, `test`, `schema:generate`, `schema:check`).
 - Zod 4.x for runtime validation at the wrapper-skill boundaries. JSON Schema is generated from Zod via `z.toJSONSchema()` — never edit `schemas/triage-output.schema.json` by hand.
-- Tests: `node --test triage.test.ts`. No external test framework.
+- Tests: colocated `*.spec.ts` files next to the modules they cover (Shopware Admin/Storefront convention). Discovery via `npm test` (= `node --test '**/*.spec.ts'`). No external test framework.
 
 ## Don'ts (wrapper-edit specific)
 

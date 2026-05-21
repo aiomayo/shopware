@@ -29,7 +29,8 @@ Four small, composable pieces:
    │     │   - has full read access to repo + gh                   │
    │     │   - loops through tools (rg, git, gh) until done        │
    │     ▼                                                         │
-   │  Structured JSON output (validates against schemas/<task>.json)│
+   │  Output: JSON (wrapper-fed, Zod-validated against schemas/    │
+   │  <task>.json) OR Markdown summary (interactive runtime)        │
    └───────────────────────────────────────────────────────────────┘
 ```
 
@@ -37,20 +38,26 @@ Everything else (eval suites, audit logs, comment posting, multi-model review) i
 
 ## How AI Triage works today
 
+The same skill is invoked two ways — the agent detects mode from the presence of the wrapper-supplied `<input_json>` block.
+
+### Wrapper-fed (CI)
 1. A maintainer opens **Actions → AI Triage → Run workflow**, enters an issue number, and (optionally) picks an engine (`opencode` / `codex` / `claude`).
 2. The workflow:
-   - checks out the repo, installs the selected agent runtime, checks the matching provider key is present
+   - hardens the runner egress (allow-list only providers + GitHub + npm), checks out with full history, installs npm deps (no scripts), then explicitly runs the agent CLIs' native-binary postinstall
    - calls `gh api repos/.../issues/<N>` to fetch the issue
-   - runs a PII redactor over the body (emails, IBANs, API keys, user paths)
-   - invokes the selected agent with the implementer prompt and the issue JSON as input
+   - runs a PII redactor over title + body (emails, IBANs, API keys, user paths, Shopware integration keys, JWTs, PEM blocks, etc.)
+   - invokes the selected agent with the SKILL.md body + the redacted issue as `<input_json>`
 3. The agent investigates autonomously:
    - `rg` to find affected source files
-   - `git log` to spot recent fixes in that area
+   - `git log --since="12 months ago"` to spot recent fixes in that area
    - `gh issue list` / `gh pr view` to check for duplicates and existing fix-PRs
-4. The agent emits a single JSON object: disposition, severity, suggested labels, confidence, affected paths, related PRs, evidence quotes, change-size estimate.
-5. The workflow uploads the JSON as an artifact (14-day retention) and writes a markdown summary to the run page.
+4. The agent emits a single JSON object → wrapper truncates oversized fields → Zod-validates (strict, unknown keys rejected) → scans content for secret-shaped strings (defence-in-depth) → harvests token/cost telemetry from the engine's structured output channel → prints.
+5. The workflow PII-redacts the captured outputs again as defense-in-depth, then uploads as artifact (7-day retention) and writes a markdown summary to the run page showing engine, wall time, input/output/total tokens, USD cost, and PII redaction counts.
 
-**Today this is dry-run only** — the JSON is the deliverable. Comment posting, auto-labeling, and metric dashboards are explicitly deferred until the foundation is reviewed.
+### Interactive (developer)
+A developer in the sw1 repo with Claude Code / opencode / Codex CLI says something like "triage issue #16599". The runtime auto-loads SKILL.md based on the description match. The agent fetches the issue itself via `gh`, runs the same research workflow, and emits a **human-readable Markdown summary** (no JSON, no fence) so the terminal output is immediately scannable.
+
+**Today this is dry-run only** — the JSON / Markdown is the deliverable. Comment posting, auto-labeling, and metric dashboards are explicitly deferred until the foundation is reviewed.
 
 ## Where it runs
 
@@ -95,7 +102,7 @@ Triage is intentionally the **first** stage, not the only one. The foundation is
 
 | Stage | Output | Side-effect | Sandbox / approval |
 |---|---|---|---|
-| **Triage** *(today)* | JSON suggestion | None — read-only | `workspace-write` (incidental writes discarded), single human triggers via `workflow_dispatch` |
+| **Triage** *(today)* | JSON (CI) or Markdown summary (interactive dev) | None — read-only | `workspace-write` (incidental writes discarded), single human triggers via `workflow_dispatch` or skill auto-load in Claude Code / opencode / Codex CLI |
 | **Reproduce** *(planned)* | Failing test in a scratch dir | Generates code, but does not commit | `workspace-write` in an ephemeral runner; output is a patch attached to the workflow run |
 | **Fix** *(planned)* | Patch / draft PR | Opens a PR with `draft: true` and a clear bot-author marker | `workspace-write` + branch protection on `trunk`; PR requires human review and CI green before merge |
 | **Validate** *(planned)* | Test-run report | Comments verification status on the linked PR | `workspace-write` + CI integration; comments are gated on dry-run/preview tokens initially |
