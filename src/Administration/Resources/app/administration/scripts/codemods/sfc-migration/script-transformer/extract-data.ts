@@ -8,26 +8,31 @@ export function extractDataProps(optionsObj: ObjectLiteralExpression): ExtractDa
 
     let returnExpr: ObjectLiteralExpression | undefined;
 
+    // Example: `{ data() { return { isLoading: false }; } }`
     if (dataProp.isKind(SyntaxKind.MethodDeclaration)) {
         const body = dataProp.asKindOrThrow(SyntaxKind.MethodDeclaration).getBody();
         // TODO: Silent ignore: getDescendantsOfKind can pick nested returns,
         // so helper function return objects may be migrated as component data.
+        // Example: `{ data() { return { isLoading: false }; } }`
         const returnStmt = body?.getDescendantsOfKind(SyntaxKind.ReturnStatement)[0];
         returnExpr = returnStmt?.getExpression()?.isKind(SyntaxKind.ObjectLiteralExpression)
             ? returnStmt.getExpression()!.asKindOrThrow(SyntaxKind.ObjectLiteralExpression)
             : undefined;
     } else if (dataProp.isKind(SyntaxKind.PropertyAssignment)) {
         const init = dataProp.asKindOrThrow(SyntaxKind.PropertyAssignment).getInitializer();
+        // Examples: `{ data: () => ({ isLoading: false }) }` and `{ data: function () { return {}; } }`
         if (init?.isKind(SyntaxKind.ArrowFunction) || init?.isKind(SyntaxKind.FunctionExpression)) {
             const body = init.isKind(SyntaxKind.ArrowFunction)
                 ? init.asKindOrThrow(SyntaxKind.ArrowFunction).getBody()
                 : init.asKindOrThrow(SyntaxKind.FunctionExpression).getBody();
+            // Example: `{ data: () => ({ isLoading: false }) }`
             if (body?.isKind(SyntaxKind.ParenthesizedExpression)) {
                 const inner = body.asKindOrThrow(SyntaxKind.ParenthesizedExpression).getExpression();
                 returnExpr = inner.isKind(SyntaxKind.ObjectLiteralExpression)
                     ? inner.asKindOrThrow(SyntaxKind.ObjectLiteralExpression)
                     : undefined;
             } else if (body?.isKind(SyntaxKind.Block)) {
+                // Example: `{ data: () => { return { isLoading: false }; } }`
                 const returnStmt = body.asKindOrThrow(SyntaxKind.Block).getDescendantsOfKind(SyntaxKind.ReturnStatement)[0];
                 returnExpr = returnStmt?.getExpression()?.isKind(SyntaxKind.ObjectLiteralExpression)
                     ? returnStmt.getExpression()!.asKindOrThrow(SyntaxKind.ObjectLiteralExpression)
@@ -58,11 +63,13 @@ export function extractDataProps(optionsObj: ObjectLiteralExpression): ExtractDa
             return;
         }
 
+        // Example: `{ data() { return { isLoading }; } }`
         if (p.isKind(SyntaxKind.ShorthandPropertyAssignment)) {
             unsupportedEntries.push(`${p.getName()}: shorthand data entries must be migrated manually`);
             return;
         }
 
+        // Example: `{ data() { return { ...defaults }; } }`
         if (p.isKind(SyntaxKind.SpreadAssignment)) {
             unsupportedEntries.push(`${p.getText()}: spread data entries must be migrated manually`);
             return;

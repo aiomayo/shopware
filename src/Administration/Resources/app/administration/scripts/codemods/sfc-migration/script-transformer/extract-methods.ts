@@ -10,12 +10,14 @@ export function extractMethodProps(optionsObj: ObjectLiteralExpression): MethodP
 
     const methodsObj = methodsProp
         .asKindOrThrow(SyntaxKind.PropertyAssignment)
+        // Example: `{ methods: { save() { this.repository.save(); } } }`
         .getInitializerIfKind(SyntaxKind.ObjectLiteralExpression);
     if (!methodsObj) return [];
 
     const result: MethodProp[] = [];
 
     for (const prop of methodsObj.getProperties()) {
+        // Example: `{ methods: { save() { this.repository.save(); } } }`
         if (prop.isKind(SyntaxKind.MethodDeclaration)) {
             const method = prop.asKindOrThrow(SyntaxKind.MethodDeclaration);
             result.push({
@@ -28,6 +30,7 @@ export function extractMethodProps(optionsObj: ObjectLiteralExpression): MethodP
                 isAsync: method.isAsync(),
             });
         } else if (prop.isKind(SyntaxKind.PropertyAssignment)) {
+            // Example: `{ methods: { save: async function () { await this.repository.save(); } } }`
             const pa = prop.asKindOrThrow(SyntaxKind.PropertyAssignment);
             const name = pa.getName();
             const initializerText = pa.getInitializer()?.getText() ?? '';
