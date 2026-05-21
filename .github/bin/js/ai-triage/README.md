@@ -35,9 +35,14 @@ The output is **read-only**: the agent does not post comments, label, or modify 
 ├── redact-stream.ts                        post-run output redactor (used by CI)
 ├── pii-patterns.ts                         shared PII regex patterns (input + output redaction)
 ├── skill/
-│   ├── input.ts                            RawIssue, template-fields, language, prompt assembly
-│   └── output.ts                           TriageOutput (Zod) + parseJsonFromText
-├── triage.test.ts                          unit tests (34 tests, run via `npm test`)
+│   ├── input.ts                            RawIssue, template-fields, language detection, SkillInput
+│   ├── input.spec.ts                       unit tests — extractTemplateFields, detectLanguage, SkillInput Zod
+│   ├── output.ts                           TriageOutput (Zod) + parseJsonFromText + truncateOversizedFields
+│   ├── output.spec.ts                      unit tests — parseJsonFromText + truncate + schema validation
+│   ├── prompt.ts                           stripFrontmatter + formatPromptWithInput
+│   └── prompt.spec.ts                      unit tests — frontmatter + prompt assembly
+├── pii-patterns.spec.ts                    unit tests — every redaction pattern (synthetic samples only)
+├── triage.spec.ts                          unit tests — opencode stdout parser + --engine validation
 └── schemas/
     └── triage-output.schema.json           JSON Schema (generated from Zod via z.toJSONSchema)
 ```
@@ -174,9 +179,16 @@ opencode + API key is **stateless**: parallel triage runs are safe, no cache, no
 
 opencode and Codex CLI run the agent in an ephemeral GitHub Actions runner with full network access (required for `gh` lookups). The triage prompt explicitly forbids file writes; any incidental write lands in the runner workspace and is discarded with the runner. Codex CLI additionally enforces an OS-level Seatbelt/Landlock sandbox; opencode does not. For this read-only stage the runner isolation is sufficient.
 
-## Output schema
+## Output
 
-The output JSON validates against `schemas/triage-output.schema.json` and the Zod schema in `triage.ts:TriageOutput`. Both are kept in sync manually for now — when refactoring, regenerate one from the other (or add a build step).
+The skill emits **two different output formats depending on invocation mode** (see `.claude/skills/triage/SKILL.md` "Operating modes"):
+
+- **Interactive mode** (you in Claude Code / opencode / Codex CLI, no `<input_json>` block) → human-readable Markdown summary with table + sections.
+- **Wrapper-fed mode** (CI via `node triage.ts` / `npm run triage`, `<input_json>` block present) → single JSON object matching the schema below. Wrapper enforces structure via Zod; engines also enforce engine-side schema where supported (codex `--output-schema`, claude `--json-schema`).
+
+### Wrapper JSON schema
+
+The JSON Schema at `schemas/triage-output.schema.json` is **generated from the Zod source of truth** in `skill/output.ts:TriageOutput` via `npm run schema:generate`. A `schema:check` script verifies they're in sync; the wrapper validates every parsed agent output against the Zod schema before printing.
 
 Key fields:
 
@@ -186,14 +198,14 @@ Key fields:
 | `severity` | enum | `low`, `medium`, `high`, `critical` (technical impact, not business priority) |
 | `suggested_labels` | string[] | 1–2 `domain/*` labels from the catalogue |
 | `confidence` | number | 0.0–1.0, calibrated per rubric in `.claude/skills/triage/references/CLASSIFICATION.md` |
-| `reasoning` | string | 2–5 sentences referencing concrete paths, commits, PRs |
-| `evidence_quotes` | string[] | 1–5 verbatim spans from input or shell output |
+| `reasoning` | string | 2–5 sentences (max 2000 chars), references concrete paths, commits, PRs |
+| `evidence_quotes` | string[] | 1–5 verbatim spans, max 500 chars each (wrapper truncates overshoots) |
 | `affected_paths` | string[] | files identified via `rg`/`find` |
 | `related_prs` | int[] | PRs that touch the same area |
-| `recent_commits_in_area` | string[] | short `git log --oneline` entries |
+| `recent_commits_in_area` | string[] | short `git log --oneline` entries, max 200 chars each |
 | `change_size_estimate` | enum | `quick-fix`, `small`, `medium`, `large`, `unknown` |
 
-The wrapper additionally records `engine` in the top-level result, so cross-engine eval runs are traceable.
+The wrapper additionally records `engine` + `wall_clock_ms` + `redaction_counts` + `template_fields` + `language_detected` in the top-level result, so cross-engine eval runs are traceable.
 
 ## Naming / conventions
 

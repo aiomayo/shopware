@@ -8,8 +8,7 @@ Loaded by the triage agent on-demand when it needs the full tool catalogue. Cost
 - `rg "function exportFile" --type=php -n` — search for code patterns
 - `find src/Core -name "*.php" -path "*ImportExport*"` — list candidate files
 - `ls src/Core/Content/ImportExport/` — explore a directory
-- `head -100 src/Core/Content/ImportExport/Service/ImportExportService.php` — inspect file start
-- `rg -A 5 "function generateFilename" src/Core/Content/ImportExport/` — show context window around a pattern
+- `rg -A 5 "function generateFilename" src/Core/Content/ImportExport/` — show context window around a pattern (use `-A`/`-B` instead of `head`/`tail`)
 
 ## Git history (cheap)
 
@@ -34,7 +33,7 @@ When you quote shell output (e.g. a `git log` author line, a `gh issue view` bod
 
 ## Anti-patterns — do NOT do this
 
-- Do not `cat` huge files without `head`/`tail` — wastes tokens.
+- Do not `cat` huge files — use `rg -A N`/`rg -B N` for context windows. (`head` / `tail` are NOT in the allowlist any more — a prompt-injected agent could otherwise read `/proc/self/environ` and emit secrets.)
 - Do not `git log` without `--oneline` and without a `-- <path>` filter — too noisy.
 - Do not `find /` or unrestricted globs — too slow.
 - Do not run `gh issue list` multiple times with slight variations — pick 1–2 good queries.

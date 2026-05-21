@@ -7,7 +7,7 @@
   "scripts": {
     "triage": "node triage.ts",
     "redact-stream": "node redact-stream.ts",
-    "test": "node --test triage.test.ts",
+    "test": "node --test '**/*.spec.ts'",
     "schema:generate": "node generate-schema.ts write",
     "schema:check": "node generate-schema.ts check"
   },

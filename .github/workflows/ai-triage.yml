@@ -27,6 +27,12 @@ on:
         type: boolean
         default: true
 
+# NEVER add `contents: write`, `issues: write`, or `pull-requests: write` here.
+# The agent has broad Bash tool access (rg, git log/show/diff, gh issue/pr view, ls, find);
+# write scope on the GITHUB_TOKEN would let a prompt-injected agent label, close,
+# or open issues, push branches, etc. When comment-posting lands (planned), wire it
+# from a separate sibling job that consumes the JSON artifact — never give the agent
+# the token with write scope.
 permissions:
   contents: read
   issues: read
@@ -34,9 +40,14 @@ permissions:
 # Per-issue concurrency: blocks the same issue from racing on itself, allows different
 # issues to triage in parallel. The previous OAuth-driven workflow-wide group is gone
 # because API keys are stateless.
+#
+# `cancel-in-progress: false`: every cancellation discards an in-flight run that has
+# already consumed model tokens (= burned API budget). Rapid-fire workflow_dispatch
+# on the same issue would otherwise be a budget-drain vector. Queueing the next run
+# instead lets the first complete; its verdict is the authoritative one.
 concurrency:
   group: ai-triage-${{ inputs.issue_number }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   triage:
@@ -208,17 +219,48 @@ jobs:
           path: |
             .github/bin/js/ai-triage/triage-result.json
             .github/bin/js/ai-triage/triage-stderr.log
-          retention-days: 14
-          if-no-files-found: warn
+          # Retention 7 days — wide enough to investigate a misclassification,
+          # narrow enough to limit the window any leaked PII the redactor missed
+          # (defence-in-depth — we redact aggressively, but assume the redactor
+          # is incomplete). All repo collaborators can read workflow artifacts.
+          retention-days: 7
+          # Fail loud rather than warn — silent missing artifact = the redactor
+          # truncated/dropped the file and no one notices until the issue is
+          # already mis-triaged in a follow-up run.
+          if-no-files-found: error
 
       - name: Summary
         if: success()
         run: |
-          echo "## AI Triage Result — Issue #${{ inputs.issue_number }} (engine=${{ inputs.engine }})" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Dry-run mode: \`${{ inputs.dry_run }}\` (no comment posted)" >> $GITHUB_STEP_SUMMARY
-          echo "Debug mode: \`${{ inputs.debug }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo '```json' >> $GITHUB_STEP_SUMMARY
-          jq '.triage' .github/bin/js/ai-triage/triage-result.json >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          RESULT_FILE=.github/bin/js/ai-triage/triage-result.json
+          {
+            echo "## AI Triage — Issue #${{ inputs.issue_number }} (engine=${{ inputs.engine }})"
+            echo ""
+            echo "Dry-run mode: \`${{ inputs.dry_run }}\` (no comment posted)"
+            echo "Debug mode: \`${{ inputs.debug }}\`"
+            echo ""
+
+            # Cost / token usage — per-run audit trail for budget tracking.
+            # The wrapper harvests usage from each engine's structured output
+            # channel (claude `--output-format json` envelope, opencode JSONL
+            # events, codex stderr token lines). `null` fields mean the engine
+            # did not report that dimension.
+            echo "### Run metadata"
+            echo ""
+            echo "| Metric | Value |"
+            echo "|---|---|"
+            echo "| Engine | \`$(jq -r '.engine' "$RESULT_FILE")\` |"
+            echo "| Wall time | $(jq -r '"\(.wall_clock_ms / 1000 | tostring | .[0:5])s"' "$RESULT_FILE") |"
+            echo "| Input tokens | $(jq -r '.usage.input_tokens // "—"' "$RESULT_FILE") |"
+            echo "| Output tokens | $(jq -r '.usage.output_tokens // "—"' "$RESULT_FILE") |"
+            echo "| Total tokens | $(jq -r '.usage.total_tokens // "—"' "$RESULT_FILE") |"
+            echo "| Cost (USD) | $(jq -r 'if .usage.total_cost_usd then "$\(.usage.total_cost_usd)" else "—" end' "$RESULT_FILE") |"
+            echo "| PII redactions | $(jq -r '.redaction_counts | to_entries | map("\(.key)=\(.value)") | join(", ") // "none"' "$RESULT_FILE") |"
+            echo ""
+
+            echo "### Triage result"
+            echo ""
+            echo '```json'
+            jq '.triage' "$RESULT_FILE"
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY

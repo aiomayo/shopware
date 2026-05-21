@@ -49,9 +49,9 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { redactPii } from "./pii-patterns.ts";
-import { SkillInput, RawIssue, extractTemplateFields, detectLanguage } from "./skill/input.ts";
+import { SkillInput, RawIssue, extractTemplateFields, detectLanguage, truncateRawIssueInput } from "./skill/input.ts";
 import { formatPromptWithInput, stripFrontmatter } from "./skill/prompt.ts";
-import { TriageOutput, parseJsonFromText, truncateOversizedFields } from "./skill/output.ts";
+import { TriageOutput, parseJsonFromText, truncateOversizedFields, assertNoSecretsInOutput } from "./skill/output.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -85,14 +85,47 @@ const env = EnvSchema.parse(process.env);
 const VERBOSE = env.AI_TRIAGE_VERBOSE;
 
 // -- Engine layer --------------------------------------------------------
+//
+// The engine layer is task-agnostic on purpose: `runOpencode`, `runCodex`,
+// `runClaude` all return raw text. `runEngine` is generic over an output Zod
+// schema — it parses + validates + scans for secret-content, then returns the
+// validated value with usage telemetry. A second task (ai-pr-review, etc.)
+// drops in by importing `runEngine` with its own schema; nothing in the engine
+// runners depends on `TriageOutput`. When the second task lands, the engine
+// runners + `spawnAndWait` + `buildChildEnv` move to `lib/` unchanged.
 
 type Engine = "opencode" | "codex" | "claude";
 
-interface EngineResult {
-  output: TriageOutput;
+interface EngineResult<TOutput> {
+  output: TOutput;
   wallClockMs: number;
   engine: Engine;
+  usage: UsageStats;
 }
+
+/**
+ * Per-engine token + cost telemetry, harvested from each engine's structured
+ * output channel. `null` fields are emitted when an engine doesn't report that
+ * dimension (opencode emits tokens but not cost; codex reports both; claude
+ * reports both via `--output-format json`). Surfacing usage in the result
+ * makes per-run cost auditable in the workflow summary.
+ */
+interface UsageStats {
+  input_tokens: number | null;
+  output_tokens: number | null;
+  total_tokens: number | null;
+  total_cost_usd: number | null;
+  /** Free-form provider-specific extras (e.g. cache_read_tokens) — never `undefined`. */
+  raw: Record<string, unknown>;
+}
+
+const EMPTY_USAGE: UsageStats = {
+  input_tokens: null,
+  output_tokens: null,
+  total_tokens: null,
+  total_cost_usd: null,
+  raw: {},
+};
 
 export function parseEngine(raw: string | undefined): Engine {
   const v = (raw ?? "opencode").toLowerCase();
@@ -189,7 +222,7 @@ async function spawnAndWait(
  * issue bodies aren't mangled. Per-run isolated XDG dirs ensure opencode's SQLite WAL
  * cache (and any analogous engine state) doesn't race across parallel runs.
  */
-function buildChildEnv(engine: Engine, xdgDir: string): NodeJS.ProcessEnv {
+export function buildChildEnv(engine: Engine, xdgDir: string): NodeJS.ProcessEnv {
   const childEnv: NodeJS.ProcessEnv = {
     PATH: process.env.PATH,
     HOME: process.env.HOME,
@@ -263,6 +296,123 @@ function buildChildEnv(engine: Engine, xdgDir: string): NodeJS.ProcessEnv {
  * rather than silently misparse. When opencode publishes a typed SDK or schema,
  * replace this with a Zod-validated event union.
  */
+// -- Usage extractors ----------------------------------------------------
+//
+// Each engine reports token + cost telemetry differently. These extractors
+// tolerate schema additions (use defensive optional chaining) and return
+// EMPTY_USAGE when nothing is found. They never throw — usage telemetry is
+// "nice to have" alongside the triage result, not load-bearing.
+//
+// Surface: the parsed UsageStats lands in the wrapper's top-level JSON output
+// and gets summarised in the workflow's GITHUB_STEP_SUMMARY so per-run cost
+// is auditable without downloading the artifact.
+
+/**
+ * opencode `--format json` emits events; the terminal event carries usage
+ * info per the upstream wire format (varies across minor versions, like the
+ * final-message shape). Best-effort: scan every JSON line for token-shaped
+ * fields and surface the last match.
+ */
+export function extractOpencodeUsage(stdout: string): UsageStats {
+  let input: number | null = null;
+  let output: number | null = null;
+  let cost: number | null = null;
+  const raw: Record<string, unknown> = {};
+  for (const line of stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) continue;
+    let evt: unknown;
+    try { evt = JSON.parse(trimmed); } catch { continue; }
+    if (typeof evt !== "object" || evt === null) continue;
+    const rec = evt as Record<string, unknown>;
+    // Many opencode events nest tokens under `tokens: {...}` or `usage: {...}`.
+    const tokenBlock = (rec.tokens ?? rec.usage) as Record<string, unknown> | undefined;
+    if (tokenBlock && typeof tokenBlock === "object") {
+      const ip = pickNumber(tokenBlock, ["input", "prompt", "input_tokens", "prompt_tokens"]);
+      const op = pickNumber(tokenBlock, ["output", "completion", "output_tokens", "completion_tokens"]);
+      if (ip !== null) input = ip;
+      if (op !== null) output = op;
+      Object.assign(raw, tokenBlock);
+    }
+    const costNum = pickNumber(rec, ["cost", "total_cost_usd", "cost_usd"]);
+    if (costNum !== null) cost = costNum;
+  }
+  return {
+    input_tokens: input,
+    output_tokens: output,
+    total_tokens: input !== null && output !== null ? input + output : null,
+    total_cost_usd: cost,
+    raw,
+  };
+}
+
+/**
+ * codex emits usage to stderr as `token usage: ...` lines in its event log.
+ * Tolerant best-effort regex against the visible format on 0.131.x.
+ */
+export function extractCodexUsage(stderrAndStdout: string): UsageStats {
+  // Visible format: `tokens: input=12345 output=678 total=13023`
+  let input: number | null = null;
+  let output: number | null = null;
+  let total: number | null = null;
+  const re = /\btokens?:?\s*(?:input[=:\s]+(\d+))?[\s,]*(?:output[=:\s]+(\d+))?[\s,]*(?:total[=:\s]+(\d+))?/gi;
+  for (const m of stderrAndStdout.matchAll(re)) {
+    if (m[1]) input = Math.max(input ?? 0, Number(m[1]));
+    if (m[2]) output = Math.max(output ?? 0, Number(m[2]));
+    if (m[3]) total = Math.max(total ?? 0, Number(m[3]));
+  }
+  // codex doesn't surface cost in stderr; leave as null.
+  return {
+    input_tokens: input,
+    output_tokens: output,
+    total_tokens: total ?? (input !== null && output !== null ? input + output : null),
+    total_cost_usd: null,
+    raw: {},
+  };
+}
+
+/**
+ * claude `--output-format json` envelope shape (verified against
+ * @anthropic-ai/claude-code@2.1.144):
+ *   { result, total_cost_usd, usage: { input_tokens, output_tokens,
+ *     cache_read_input_tokens?, cache_creation_input_tokens? }, ... }
+ * Future fields fall into `raw` for the workflow summary.
+ */
+export function extractClaudeUsage(envelopeRaw: unknown): UsageStats {
+  if (typeof envelopeRaw !== "object" || envelopeRaw === null) return EMPTY_USAGE;
+  const rec = envelopeRaw as Record<string, unknown>;
+  const usage = rec.usage;
+  const cost = pickNumber(rec, ["total_cost_usd", "cost_usd"]);
+  let input: number | null = null;
+  let output: number | null = null;
+  const raw: Record<string, unknown> = {};
+  if (typeof usage === "object" && usage !== null) {
+    const u = usage as Record<string, unknown>;
+    input = pickNumber(u, ["input_tokens", "prompt_tokens"]);
+    output = pickNumber(u, ["output_tokens", "completion_tokens"]);
+    for (const k of Object.keys(u)) {
+      if (k !== "input_tokens" && k !== "output_tokens" && k !== "prompt_tokens" && k !== "completion_tokens") {
+        raw[k] = u[k];
+      }
+    }
+  }
+  return {
+    input_tokens: input,
+    output_tokens: output,
+    total_tokens: input !== null && output !== null ? input + output : null,
+    total_cost_usd: cost,
+    raw,
+  };
+}
+
+function pickNumber(obj: Record<string, unknown>, keys: ReadonlyArray<string>): number | null {
+  for (const k of keys) {
+    const v = obj[k];
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+  }
+  return null;
+}
+
 export function extractOpencodeFinalMessage(stdout: string): string {
   const candidates: string[] = [];
   for (const line of stdout.split(/\r?\n/)) {
@@ -310,7 +460,7 @@ export function extractOpencodeFinalMessage(stdout: string): string {
  * ai-adr-review), these runners can be extracted to `lib/` and reused without
  * the schema being baked into the engine signature.
  */
-async function runOpencode(prompt: string, repoRoot: string, xdgDir: string): Promise<string> {
+async function runOpencode(prompt: string, repoRoot: string, xdgDir: string): Promise<{ finalText: string; usage: UsageStats }> {
   // opencode is multi-provider — model must be passed as `provider/name` (e.g. `openai/gpt-5.5`
   // or `anthropic/claude-sonnet-4-6`). opencode reads OPENAI_API_KEY and ANTHROPIC_API_KEY from
   // env and picks the right one based on the provider prefix. Default is Anthropic Sonnet because
@@ -319,9 +469,21 @@ async function runOpencode(prompt: string, repoRoot: string, xdgDir: string): Pr
   const reasoning = env.AI_TRIAGE_REASONING;
   const timeoutMs = env.AI_TRIAGE_TIMEOUT_MS;
 
-  // opencode emits structured JSONL events with --format json, which we parse for the
-  // assistant's final message text. Attacker-controlled tool output can no longer
-  // forge the final-answer channel (P1 002 fix).
+  // Argv vs stdin trade-off (opencode 1.15.5):
+  //   opencode `run` accepts the message ONLY as a positional argv — it has no
+  //   `--prompt-file`, `--stdin`, or `-` mode. The other two engines (codex,
+  //   claude) take prompt via stdin so it never appears in `ps auxww` /
+  //   /proc/<pid>/cmdline. opencode does not offer that path.
+  //
+  //   Residual risk: the assembled prompt (skill body + redacted issue) is
+  //   visible to any process able to read /proc on the runner during
+  //   opencode's lifetime. Defence-in-depth in place:
+  //     1. Prompt content is PII-redacted upstream (triage.ts main()).
+  //     2. Body is hard-capped at MAX_BODY_LEN (16 KiB) → assembled prompt
+  //        stays well under Linux ARG_MAX (~128 KiB), eliminating the
+  //        previously documented E2BIG crash mode.
+  //     3. GitHub-hosted runners are ephemeral and single-tenant per job.
+  //   Move to stdin when opencode ships a stdin/file-prompt mode.
   const { stdout } = await spawnAndWait("opencode", [
     "run",
     "--model", model,
@@ -336,10 +498,12 @@ async function runOpencode(prompt: string, repoRoot: string, xdgDir: string): Pr
     timeoutMs,
     label: "opencode",
   });
-  return extractOpencodeFinalMessage(stdout);
+  const finalText = extractOpencodeFinalMessage(stdout);
+  const usage = extractOpencodeUsage(stdout);
+  return { finalText, usage };
 }
 
-async function runCodex(prompt: string, repoRoot: string, schemaPath: string, xdgDir: string): Promise<string> {
+async function runCodex(prompt: string, repoRoot: string, schemaPath: string, xdgDir: string): Promise<{ finalText: string; usage: UsageStats }> {
   // codex is OpenAI-only.
   const model = env.AI_TRIAGE_CODEX_MODEL;
   const reasoning = env.AI_TRIAGE_REASONING;
@@ -349,7 +513,7 @@ async function runCodex(prompt: string, repoRoot: string, schemaPath: string, xd
   // AND --output-schema (engine enforces JSON schema). Belt + braces with Zod validation in main.
   const lastMsgFile = join(xdgDir, "codex-last-message.txt");
 
-  await spawnAndWait("codex", [
+  const { stdout, stderr } = await spawnAndWait("codex", [
     "exec",
     "--model", model,
     "--sandbox", "workspace-write",
@@ -365,18 +529,20 @@ async function runCodex(prompt: string, repoRoot: string, schemaPath: string, xd
     timeoutMs,
     label: "codex",
   });
-  return readFileSync(lastMsgFile, "utf8");
+  const finalText = readFileSync(lastMsgFile, "utf8");
+  const usage = extractCodexUsage(stdout + "\n" + stderr);
+  return { finalText, usage };
 }
 
 // Claude --output-format json wraps the final assistant text in one of two
 // envelope shapes depending on CLI version. The discriminated union surfaces
 // drift loudly via Zod rather than the previous typeof+as cast ladder.
-const ClaudeEnvelope = z.union([
+export const ClaudeEnvelope = z.union([
   z.object({ result: z.string() }),
   z.object({ result: z.object({ text: z.string() }) }),
 ]);
 
-async function runClaude(prompt: string, repoRoot: string, schemaPath: string, xdgDir: string): Promise<string> {
+async function runClaude(prompt: string, repoRoot: string, schemaPath: string, xdgDir: string): Promise<{ finalText: string; usage: UsageStats }> {
   const model = env.AI_TRIAGE_ANTHROPIC_MODEL;
   const timeoutMs = env.AI_TRIAGE_TIMEOUT_MS;
   const maxBudgetUsd = env.AI_TRIAGE_MAX_BUDGET_USD;
@@ -393,7 +559,33 @@ async function runClaude(prompt: string, repoRoot: string, schemaPath: string, x
     "--json-schema", schema,
     "--no-session-persistence",
     "--max-budget-usd", String(maxBudgetUsd),
-    "--allowedTools", "Bash(rg:*),Bash(git:*),Bash(gh:*),Bash(find:*),Bash(head:*),Bash(tail:*),Read,Glob,Grep",
+    // Narrow allowlist — least-privilege defence-in-depth.
+    //   - `gh` limited to read-only issue/PR/api surface; `gh secret list`, `gh auth status -t`,
+    //     `gh issue create` are blocked even if the token's scope would permit them.
+    //   - `git` limited to inspection subcommands; `git push`, `git config`, `git remote` blocked.
+    //   - `head` / `tail` removed: a prompt-injected agent could otherwise read /proc/self/environ
+    //     and emit secrets into the structured output (Zod fails-strict + post-output secret scan
+    //     catches it as a second line of defence). The `Read` tool is path-confined to the repo.
+    //   - `ls` is permitted to match SKILL.md `allowed-tools` (was previously a drift bug —
+    //     the skill expected `ls`, the wrapper rejected it).
+    "--allowedTools", [
+      "Bash(rg:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git diff:*)",
+      "Bash(git blame:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh issue list:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh api repos/*/issues/*:*)",
+      "Bash(gh api repos/*/pulls/*:*)",
+      "Bash(find:*)",
+      "Bash(ls:*)",
+      "Read",
+      "Glob",
+      "Grep",
+    ].join(","),
     "--add-dir", repoRoot,
   ], {
     stdin: prompt,
@@ -408,17 +600,46 @@ async function runClaude(prompt: string, repoRoot: string, schemaPath: string, x
     throw new Error(`claude: failed to parse output envelope: ${(err as Error).message}\nstdout tail: ${stdout.slice(-500)}`);
   }
   const envelope = ClaudeEnvelope.parse(envelopeRaw);
-  return typeof envelope.result === "string" ? envelope.result : envelope.result.text;
+  const finalText = typeof envelope.result === "string" ? envelope.result : envelope.result.text;
+  // claude `--output-format json` envelope carries usage + total_cost_usd alongside
+  // the result; harvest both for the per-run summary. Tolerant to schema additions.
+  const usage = extractClaudeUsage(envelopeRaw);
+  return { finalText, usage };
 }
 
-async function runEngine(skillPath: string, repoRoot: string, input: SkillInput): Promise<EngineResult> {
+/**
+ * Engine-layer orchestrator. Task-agnostic by design: the caller passes the
+ * Zod schema for its output type, and `runEngine` does prompt assembly, engine
+ * spawn, JSON extraction, lenient normalisation, strict validation, secret-
+ * content scan, and usage harvest. A second task (ai-pr-review, etc.) calls
+ * `runEngine` with its own `PrReviewOutput` schema; nothing in this function
+ * is triage-specific.
+ *
+ * The `normalize` callback exists for the codex/claude path where engine-side
+ * schema enforcement is loose enough that we still need a pre-Zod cleanup
+ * (today's `truncateOversizedFields`). Pass an identity fn if none is needed.
+ *
+ * The `validate` callback is the secret-content scan — task-specific
+ * (different tasks may have different output sensitivities). Pass a no-op fn
+ * if not applicable.
+ */
+async function runEngine<TOutput>(args: {
+  skillPath: string;
+  schemaPath: string;
+  repoRoot: string;
+  input: unknown;
+  outputSchema: z.ZodType<TOutput>;
+  normalize?: (parsed: unknown) => void;
+  validate?: (output: TOutput) => void;
+}): Promise<EngineResult<TOutput>> {
   const engine = env.AI_TRIAGE_ENGINE;
-  const schemaPath = resolve(__dirname, "schemas/triage-output.schema.json");
   // Read the SKILL.md (Agent Skills format), strip its YAML frontmatter, then
   // wrap with the agent input as `<input_json>` tags per the skill's contract.
-  const skillFile = readFileSync(skillPath, "utf8");
+  const skillFile = readFileSync(args.skillPath, "utf8");
   const skillBody = stripFrontmatter(skillFile);
-  const fullPrompt = formatPromptWithInput(skillBody, input);
+  // Cast: `input` is opaque to the engine layer; the wrapper-skill contract is
+  // task-specific. Each task validates its own input shape before calling.
+  const fullPrompt = formatPromptWithInput(skillBody, args.input as SkillInput);
 
   // Per-run isolated XDG dir; cleaned up in finally. Prevents opencode SQLite WAL
   // contention and any analogous engine-state corruption between parallel runs.
@@ -426,20 +647,21 @@ async function runEngine(skillPath: string, repoRoot: string, input: SkillInput)
 
   const start = Date.now();
   try {
-    let finalText: string;
+    let raw: { finalText: string; usage: UsageStats };
     switch (engine) {
-      case "opencode": finalText = await runOpencode(fullPrompt, repoRoot, xdgDir); break;
-      case "codex": finalText = await runCodex(fullPrompt, repoRoot, schemaPath, xdgDir); break;
-      case "claude": finalText = await runClaude(fullPrompt, repoRoot, schemaPath, xdgDir); break;
+      case "opencode": raw = await runOpencode(fullPrompt, args.repoRoot, xdgDir); break;
+      case "codex": raw = await runCodex(fullPrompt, args.repoRoot, args.schemaPath, xdgDir); break;
+      case "claude": raw = await runClaude(fullPrompt, args.repoRoot, args.schemaPath, xdgDir); break;
+      default: {
+        const _exhaustive: never = engine;
+        throw new Error(`unreachable: unknown engine ${String(_exhaustive)}`);
+      }
     }
-    // Task-layer validation — the engine layer is task-agnostic; the schema lives here.
-    // When a second skill (ai-pr-review etc.) lands, the engine runners extract to lib/
-    // unchanged, and that task's main() validates against its own Zod schema instead.
-    const parsedJson = parseJsonFromText(finalText, engine);
-    // Lenient normalisation before strict Zod validation — see truncateOversizedFields docs.
-    truncateOversizedFields(parsedJson);
-    const output = TriageOutput.parse(parsedJson);
-    return { output, wallClockMs: Date.now() - start, engine };
+    const parsedJson = parseJsonFromText(raw.finalText, engine);
+    args.normalize?.(parsedJson);
+    const output = args.outputSchema.parse(parsedJson);
+    args.validate?.(output);
+    return { output, wallClockMs: Date.now() - start, engine, usage: raw.usage };
   } finally {
     try { rmSync(xdgDir, { recursive: true, force: true }); } catch { /* best-effort */ }
   }
@@ -478,7 +700,9 @@ async function main() {
   let raw: RawIssue;
   if (issuePathIdx !== -1 && args[issuePathIdx + 1]) {
     const issuePath = resolve(args[issuePathIdx + 1]);
-    raw = RawIssue.parse(JSON.parse(readFileSync(issuePath, "utf8")));
+    // Truncate oversized fields BEFORE Zod parses, so a 100 KB body becomes
+    // a 16 KB body + `[truncated]` marker instead of failing the run.
+    raw = RawIssue.parse(truncateRawIssueInput(JSON.parse(readFileSync(issuePath, "utf8"))));
   } else if (issueNumberIdx !== -1 && args[issueNumberIdx + 1]) {
     const issueNumber = Number(args[issueNumberIdx + 1]);
     if (!Number.isFinite(issueNumber) || issueNumber <= 0 || !Number.isInteger(issueNumber)) {
@@ -492,8 +716,25 @@ async function main() {
     process.exit(2);
   }
 
-  const { redacted: redactedBody, counts: redactionCounts } = redactPii(raw.body ?? "");
-  const { redacted: redactedTitle } = redactPii(raw.title);
+  // Redact PII across title, body, AND labels. Labels are attacker-influenceable
+  // (any maintainer applies them, but in a large OSS repo "any maintainer" is a
+  // wide circle) — the previous code skipped them, leaving a direct prompt-injection
+  // surface (label text is concatenated into the JSON the model sees).
+  const titleResult = redactPii(raw.title);
+  const bodyResult = redactPii(raw.body ?? "");
+  const labelResults = raw.labels.map((l) => redactPii(l));
+  // Merge counts across title + body + labels so the run summary reflects every
+  // redaction site, not just the body's.
+  const redactionCounts: Record<string, number> = {};
+  for (const result of [titleResult, bodyResult, ...labelResults]) {
+    for (const [k, n] of Object.entries(result.counts)) {
+      redactionCounts[k] = (redactionCounts[k] ?? 0) + n;
+    }
+  }
+  const redactedBody = bodyResult.redacted;
+  const redactedTitle = titleResult.redacted;
+  const redactedLabels = labelResults.map((r) => r.redacted);
+
   // Build + runtime-validate the skill input. Zod parse catches bugs like
   // "I accidentally passed raw.title instead of the redacted title" — the one
   // wrapper-skill boundary that was previously unvalidated.
@@ -501,7 +742,7 @@ async function main() {
     issue_id: raw.issue_id,
     title: redactedTitle,
     body: redactedBody,
-    labels: raw.labels,
+    labels: redactedLabels,
     language_detected: detectLanguage(redactedBody),
     template_fields: extractTemplateFields(redactedBody),
   });
@@ -516,16 +757,32 @@ async function main() {
   // This is the same path Claude Code, opencode, Codex CLI auto-load — so the wrapper and
   // local interactive use share one source of truth.
   const skillPath = resolve(repoRoot, ".claude/skills/triage/SKILL.md");
+  const schemaPath = resolve(__dirname, "schemas/triage-output.schema.json");
 
-  const result = await runEngine(skillPath, repoRoot, skillInput);
+  const result = await runEngine({
+    skillPath,
+    schemaPath,
+    repoRoot,
+    input: skillInput,
+    outputSchema: TriageOutput,
+    normalize: truncateOversizedFields,
+    validate: assertNoSecretsInOutput,
+  });
 
-  const summary = `engine=${result.engine} issue=#${raw.issue_id} disposition=${result.output.disposition} severity=${result.output.severity} labels=${result.output.suggested_labels.join(",")} confidence=${result.output.confidence.toFixed(2)} duplicate_of=${result.output.duplicate_of ?? "-"} size=${result.output.change_size_estimate} wall_s=${(result.wallClockMs / 1000).toFixed(1)}`;
+  const usageBits: string[] = [];
+  if (result.usage.input_tokens !== null) usageBits.push(`in=${result.usage.input_tokens}`);
+  if (result.usage.output_tokens !== null) usageBits.push(`out=${result.usage.output_tokens}`);
+  if (result.usage.total_tokens !== null) usageBits.push(`total=${result.usage.total_tokens}`);
+  if (result.usage.total_cost_usd !== null) usageBits.push(`cost=$${result.usage.total_cost_usd.toFixed(4)}`);
+  const usageSummary = usageBits.length > 0 ? ` tokens[${usageBits.join(" ")}]` : "";
+  const summary = `engine=${result.engine} issue=#${raw.issue_id} disposition=${result.output.disposition} severity=${result.output.severity} labels=${result.output.suggested_labels.join(",")} confidence=${result.output.confidence.toFixed(2)} duplicate_of=${result.output.duplicate_of ?? "-"} size=${result.output.change_size_estimate} wall_s=${(result.wallClockMs / 1000).toFixed(1)}${usageSummary}`;
   process.stderr.write(`\n${summary}\n`);
 
   console.log(JSON.stringify({
     issue_id: raw.issue_id,
     engine: result.engine,
     wall_clock_ms: result.wallClockMs,
+    usage: result.usage,
     redaction_counts: redactionCounts,
     template_fields: skillInput.template_fields,
     language_detected: skillInput.language_detected,
