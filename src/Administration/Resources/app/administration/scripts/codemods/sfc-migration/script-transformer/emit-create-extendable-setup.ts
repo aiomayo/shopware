@@ -1,9 +1,11 @@
 import { quoteJsString } from '../string-literals';
 import type { CompositionScriptState } from './composition-script-state';
 import { indentBlock, sanitizeTodoCommentText } from './helpers';
+import { identTemplate } from './identifier-template';
+import type { ScriptLine } from './identifier-template';
 import { buildWatchSource, rewriteThisInBody } from './rewrite-this';
 
-export function emitCreateExtendableSetup(lines: string[], state: CompositionScriptState): void {
+export function emitCreateExtendableSetup(lines: ScriptLine[], state: CompositionScriptState): void {
     emitCreateExtendableSetupOpening(lines, state);
     emitCreateExtendableSetupOptions(lines, state);
     emitSupportedInjectProps(lines, state);
@@ -18,7 +20,7 @@ export function emitCreateExtendableSetup(lines: string[], state: CompositionScr
     emitCreateExtendableSetupClosing(lines, state);
 }
 
-function emitCreateExtendableSetupOpening(lines: string[], state: CompositionScriptState): void {
+function emitCreateExtendableSetupOpening(lines: ScriptLine[], state: CompositionScriptState): void {
     const { publicNames } = state;
 
     // createExtendableSetup is the Shopware compatibility layer for
@@ -33,7 +35,7 @@ function emitCreateExtendableSetupOpening(lines: string[], state: CompositionScr
     }
 }
 
-function emitCreateExtendableSetupOptions(lines: string[], state: CompositionScriptState): void {
+function emitCreateExtendableSetupOptions(lines: ScriptLine[], state: CompositionScriptState): void {
     const { registration } = state;
 
     lines.push('    {');
@@ -43,7 +45,7 @@ function emitCreateExtendableSetupOptions(lines: string[], state: CompositionScr
     lines.push('    () => {');
 }
 
-function emitSupportedInjectProps(lines: string[], state: CompositionScriptState): void {
+function emitSupportedInjectProps(lines: ScriptLine[], state: CompositionScriptState): void {
     const { supportedInjectProps } = state;
 
     supportedInjectProps.forEach(({ localName, sourceKey, defaultValueText, treatDefaultAsFactory }) => {
@@ -62,17 +64,17 @@ function emitSupportedInjectProps(lines: string[], state: CompositionScriptState
     if (supportedInjectProps.length > 0) lines.push('');
 }
 
-function emitSupportedDataProps(lines: string[], state: CompositionScriptState): void {
+function emitSupportedDataProps(lines: ScriptLine[], state: CompositionScriptState): void {
     const { ctx, supportedDataProps } = state;
 
     supportedDataProps.forEach(({ name, valueText }) => {
         const rewrittenValue = rewriteThisInBody(valueText, ctx, 'expression');
-        lines.push(`        const ${name} = ref(${rewrittenValue});`);
+        lines.push(identTemplate`        const ${name} = ref(${rewrittenValue});`);
     });
     if (supportedDataProps.length > 0) lines.push('');
 }
 
-function emitSupportedComputedProps(lines: string[], state: CompositionScriptState): void {
+function emitSupportedComputedProps(lines: ScriptLine[], state: CompositionScriptState): void {
     const { ctx, supportedComputedProps } = state;
 
     supportedComputedProps.forEach((prop) => {
@@ -97,7 +99,7 @@ function emitSupportedComputedProps(lines: string[], state: CompositionScriptSta
     if (supportedComputedProps.length > 0) lines.push('');
 }
 
-function emitSupportedMethodProps(lines: string[], state: CompositionScriptState): void {
+function emitSupportedMethodProps(lines: ScriptLine[], state: CompositionScriptState): void {
     const { ctx, supportedMethodProps } = state;
 
     supportedMethodProps.forEach(({ name, paramsText, bodyText, isAsync, rawText }) => {
@@ -105,9 +107,9 @@ function emitSupportedMethodProps(lines: string[], state: CompositionScriptState
             // Property-assignment methods often wrap callbacks in helpers such
             // as debounce(). Preserve the wrapper expression instead of
             // flattening it into a plain arrow method.
-            let rewritten = rewriteThisInBody(rawText, ctx, 'expression');
-            rewritten = rewritten.replace(/\bfunction\s+\w*\s*\(([^)]*)\)\s*\{/g, '($1) => {');
-            lines.push(`        const ${name} = ${rewritten};`);
+            const normalizedRawText = rawText.replace(/\bfunction\s+\w*\s*\(([^)]*)\)\s*\{/g, '($1) => {');
+            const rewritten = rewriteThisInBody(normalizedRawText, ctx, 'expression');
+            lines.push(identTemplate`        const ${name} = ${rewritten};`);
         } else {
             const asyncKw = isAsync ? 'async ' : '';
             const body = rewriteThisInBody(bodyText, ctx);
@@ -119,7 +121,7 @@ function emitSupportedMethodProps(lines: string[], state: CompositionScriptState
     if (supportedMethodProps.length > 0) lines.push('');
 }
 
-function emitUnsupportedWatchEntries(lines: string[], state: CompositionScriptState): void {
+function emitUnsupportedWatchEntries(lines: ScriptLine[], state: CompositionScriptState): void {
     const { unsupportedWatchEntries } = state;
 
     unsupportedWatchEntries.forEach((entry) => {
@@ -128,7 +130,7 @@ function emitUnsupportedWatchEntries(lines: string[], state: CompositionScriptSt
     if (unsupportedWatchEntries.length > 0) lines.push('');
 }
 
-function emitSupportedWatchProps(lines: string[], state: CompositionScriptState): void {
+function emitSupportedWatchProps(lines: ScriptLine[], state: CompositionScriptState): void {
     const {
         ctx,
         injectNames,
@@ -146,7 +148,7 @@ function emitSupportedWatchProps(lines: string[], state: CompositionScriptState)
 
         if (handlerName) {
             lines.push(
-                `        watch(() => ${source}, (...args) => ${handlerName}(...args)${hasOptions ? `, { ${optionsParts.join(', ')} }` : ''});`,
+                identTemplate`        watch(() => ${source}, (...args) => ${handlerName}(...args)${hasOptions ? `, { ${optionsParts.join(', ')} }` : ''});`,
             );
             return;
         }
@@ -154,14 +156,14 @@ function emitSupportedWatchProps(lines: string[], state: CompositionScriptState)
         const body = rewriteThisInBody(bodyText ?? '', ctx);
         const asyncPrefix = isAsync ? 'async ' : '';
         const paramPart = paramsText ? `${asyncPrefix}(${paramsText}) => {` : `${asyncPrefix}() => {`;
-        lines.push(`        watch(() => ${source}, ${paramPart}`);
+        lines.push(identTemplate`        watch(() => ${source}, ${paramPart}`);
         lines.push(indentBlock(body, 12));
         lines.push(hasOptions ? `        }, { ${optionsParts.join(', ')} });` : `        });`);
     });
     if (supportedWatchProps.length > 0) lines.push('');
 }
 
-function emitCreatedHooks(lines: string[], state: CompositionScriptState): void {
+function emitCreatedHooks(lines: ScriptLine[], state: CompositionScriptState): void {
     const { ctx, lifecycleHooks } = state;
     const createdHooks = lifecycleHooks.filter((h) => h.compositionName === null);
 
@@ -173,19 +175,19 @@ function emitCreatedHooks(lines: string[], state: CompositionScriptState): void 
     // setup preserves its pre-mount timing; async created() stays
     // fire-and-forget so setup itself does not become async.
     for (const hook of createdHooks) {
-        const body = rewriteThisInBody(hook.bodyText, ctx);
+        const body = rewriteThisInBody(hook.bodyText.trim(), ctx);
         if (hook.isAsync) {
             lines.push('        void (async () => {');
-            lines.push(indentBlock(body.trim(), 12));
+            lines.push(indentBlock(body, 12));
             lines.push('        })();');
         } else {
-            lines.push(indentBlock(body.trim(), 8));
+            lines.push(indentBlock(body, 8));
         }
     }
     lines.push('');
 }
 
-function emitRegularHooks(lines: string[], state: CompositionScriptState): void {
+function emitRegularHooks(lines: ScriptLine[], state: CompositionScriptState): void {
     const { ctx, regularHooks } = state;
 
     for (const { compositionName, bodyText, isAsync } of regularHooks) {
@@ -198,7 +200,7 @@ function emitRegularHooks(lines: string[], state: CompositionScriptState): void 
     if (regularHooks.length > 0) lines.push('');
 }
 
-function emitCreateExtendableSetupReturn(lines: string[], state: CompositionScriptState): void {
+function emitCreateExtendableSetupReturn(lines: ScriptLine[], state: CompositionScriptState): void {
     const { publicNames } = state;
 
     lines.push('        return {');
@@ -208,7 +210,7 @@ function emitCreateExtendableSetupReturn(lines: string[], state: CompositionScri
     lines.push('        };');
 }
 
-function emitCreateExtendableSetupClosing(lines: string[], state: CompositionScriptState): void {
+function emitCreateExtendableSetupClosing(lines: ScriptLine[], state: CompositionScriptState): void {
     lines.push('    },');
     lines.push(');');
 }

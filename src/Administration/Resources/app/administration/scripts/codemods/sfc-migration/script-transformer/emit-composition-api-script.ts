@@ -1,8 +1,11 @@
 import type { CompositionScriptState } from './composition-script-state';
 import { emitCreateExtendableSetup } from './emit-create-extendable-setup';
+import { attrsIdent, emitIdent, routeIdent, routerIdent, slotsIdent, tIdent } from './identifiers';
+import { IDENTIFIER_TEMPLATE_MARKER, identTemplate, renderIdentifierTemplates } from './identifier-template';
+import type { IdentifierTemplate, IdentifierToken, ScriptLine } from './identifier-template';
 
 export function emitCompositionApiScript(state: CompositionScriptState): string {
-    const lines: string[] = [];
+    const lines: ScriptLine[] = [];
 
     emitTodoComments(lines, state);
     emitModuleLevelCode(lines, state);
@@ -12,10 +15,10 @@ export function emitCompositionApiScript(state: CompositionScriptState): string 
     emitTemplateRefs(lines, state);
     emitCreateExtendableSetup(lines, state);
 
-    return lines.join('\n');
+    return renderIdentifierTemplates(lines, collectTakenNames(state)).join('\n');
 }
 
-function emitTodoComments(lines: string[], state: CompositionScriptState): void {
+function emitTodoComments(lines: ScriptLine[], state: CompositionScriptState): void {
     const { todoComments } = state;
 
     if (todoComments.length > 0) {
@@ -24,7 +27,7 @@ function emitTodoComments(lines: string[], state: CompositionScriptState): void 
     }
 }
 
-function emitModuleLevelCode(lines: string[], state: CompositionScriptState): void {
+function emitModuleLevelCode(lines: ScriptLine[], state: CompositionScriptState): void {
     const { moduleLevelCode } = state;
 
     if (moduleLevelCode) {
@@ -33,7 +36,7 @@ function emitModuleLevelCode(lines: string[], state: CompositionScriptState): vo
     }
 }
 
-function emitCompilerMacros(lines: string[], state: CompositionScriptState): void {
+function emitCompilerMacros(lines: ScriptLine[], state: CompositionScriptState): void {
     const { componentNameValue, effectiveEmitsKeys, emitsDefinition, inheritAttrs, propsText, usedComposables } = state;
     const defineOptionsArgs = [
         !inheritAttrs ? 'inheritAttrs: false' : '',
@@ -57,17 +60,17 @@ function emitCompilerMacros(lines: string[], state: CompositionScriptState): voi
         // TODO: Silent ignore: emits validators that reference module-local
         // declarations are emitted into defineEmits even though script setup
         // compiler macros are hoisted and cannot depend on setup locals.
-        lines.push(`const emit = defineEmits(${emitsDefinition.objectText});`);
+        lines.push(identTemplate`const ${emitIdent} = defineEmits(${emitsDefinition.objectText});`);
     } else if (effectiveEmitsKeys.length > 0) {
         const emitsList = effectiveEmitsKeys.map((k) => `'${k}'`).join(', ');
-        lines.push(`const emit = defineEmits([${emitsList}]);`);
+        lines.push(identTemplate`const ${emitIdent} = defineEmits([${emitsList}]);`);
     } else if (usedComposables.needsEmit) {
-        lines.push(`const emit = defineEmits([]);`);
+        lines.push(identTemplate`const ${emitIdent} = defineEmits([]);`);
     }
     lines.push('');
 }
 
-function emitImports(lines: string[], state: CompositionScriptState): void {
+function emitImports(lines: ScriptLine[], state: CompositionScriptState): void {
     const { usedComposables, vueImports } = state;
 
     lines.push(`import { createExtendableSetup } from 'src/app/adapter/composition-extension-system';`);
@@ -87,14 +90,14 @@ function emitImports(lines: string[], state: CompositionScriptState): void {
     lines.push('');
 }
 
-function emitComposableDeclarations(lines: string[], state: CompositionScriptState): void {
+function emitComposableDeclarations(lines: ScriptLine[], state: CompositionScriptState): void {
     const { usedComposables } = state;
 
-    if (usedComposables.needsRouter) lines.push(`const router = useRouter();`);
-    if (usedComposables.needsRoute) lines.push(`const route = useRoute();`);
-    if (usedComposables.needsSlots) lines.push(`const slots = useSlots();`);
-    if (usedComposables.needsAttrs) lines.push(`const attrs = useAttrs();`);
-    if (usedComposables.needsI18n) lines.push(`const { t } = useI18n();`);
+    if (usedComposables.needsRouter) lines.push(identTemplate`const ${routerIdent} = useRouter();`);
+    if (usedComposables.needsRoute) lines.push(identTemplate`const ${routeIdent} = useRoute();`);
+    if (usedComposables.needsSlots) lines.push(identTemplate`const ${slotsIdent} = useSlots();`);
+    if (usedComposables.needsAttrs) lines.push(identTemplate`const ${attrsIdent} = useAttrs();`);
+    if (usedComposables.needsI18n) lines.push(createI18nDeclarationTemplate());
     const hasComposableDeclarations =
         usedComposables.needsRouter ||
         usedComposables.needsRoute ||
@@ -106,11 +109,34 @@ function emitComposableDeclarations(lines: string[], state: CompositionScriptSta
     }
 }
 
-function emitTemplateRefs(lines: string[], state: CompositionScriptState): void {
+function emitTemplateRefs(lines: ScriptLine[], state: CompositionScriptState): void {
     const { templateRefNames } = state;
 
     for (const refName of templateRefNames) {
         lines.push(`const ${refName} = ref(null);`);
     }
     if (templateRefNames.length > 0) lines.push('');
+}
+
+function collectTakenNames(state: CompositionScriptState): Set<string> {
+    return new Set([
+        ...state.existingBindingNames,
+        ...state.publicNames,
+        ...state.templateRefNames,
+        'props',
+    ]);
+}
+
+function createI18nDeclarationTemplate(): IdentifierTemplate {
+    return {
+        [IDENTIFIER_TEMPLATE_MARKER]: true,
+        getIdentifierTokens(): IdentifierToken[] {
+            return [tIdent];
+        },
+        render(resolve: (token: IdentifierToken) => string): string {
+            const resolvedName = resolve(tIdent);
+
+            return resolvedName === 't' ? 'const { t } = useI18n();' : `const { t: ${resolvedName} } = useI18n();`;
+        },
+    };
 }
