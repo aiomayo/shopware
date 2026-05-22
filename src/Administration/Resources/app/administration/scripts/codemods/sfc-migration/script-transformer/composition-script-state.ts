@@ -61,116 +61,63 @@ export interface CompositionScriptState {
     manualMigrationReasons: string[];
 }
 
+interface SupportedCompositionMembers {
+    supportedInjectProps: InjectProp[];
+    supportedDataProps: DataProp[];
+    supportedComputedProps: ComputedProp[];
+    supportedMethodProps: MethodProp[];
+    supportedWatchProps: WatchProp[];
+    watchProps: WatchProp[];
+    unsupportedWatchEntries: string[];
+    propNames: Set<string>;
+    dataNames: Set<string>;
+    computedNames: Set<string>;
+    methodNames: Set<string>;
+    injectNames: Set<string>;
+    manualMigrationReasons: string[];
+    todoComments: string[];
+}
+
+interface ManualMigrationCollection {
+    manualMigrationReasons: string[];
+    todoComments: string[];
+}
+
 export function collectCompositionScriptState(
     optionsObj: ObjectLiteralExpression,
     registration: ComponentRegistration,
     sourceFile: SourceFile,
 ): CompositionScriptState {
-    const { injectProps, unsupportedEntries: unsupportedInjectEntries } = extractInjectProps(optionsObj);
-    const { dataProps, unsupportedEntries: unsupportedDataEntries } = extractDataProps(optionsObj);
-    const { computedProps, unsupportedEntries: unsupportedComputedEntries } = extractComputedProps(optionsObj);
-    const { watchProps, unsupportedEntries: unsupportedWatchEntries } = extractWatchProps(optionsObj);
-    const methodProps = extractMethodProps(optionsObj);
     const lifecycleHooks = extractLifecycleHooks(optionsObj);
     const propsText = extractPropsText(optionsObj);
     const emitsDefinition = extractEmitsDefinition(optionsObj);
     const inheritAttrs = extractInheritAttrs(optionsObj);
     const moduleLevelCode = extractModuleLevelCode(sourceFile, registration);
+
     const manualMigrationReasons: string[] = [];
     const todoComments: string[] = [];
 
-    const supportedInjectProps = injectProps.filter(({ localName }) => {
-        if (isSafeIdentifier(localName)) {
-            return true;
-        }
+    const supportedMembers = collectSupportedCompositionMembers(optionsObj, propsText);
+    manualMigrationReasons.push(...supportedMembers.manualMigrationReasons);
+    todoComments.push(...supportedMembers.todoComments);
 
-        const reason = `inject: ${localName} is not a valid JavaScript identifier`;
-        manualMigrationReasons.push(reason);
-        todoComments.push(`// TODO: migrate inject entry manually: ${sanitizeTodoCommentText(reason)}`);
-        return false;
-    });
+    const {
+        supportedInjectProps,
+        supportedDataProps,
+        supportedComputedProps,
+        supportedMethodProps,
+        supportedWatchProps,
+        unsupportedWatchEntries,
+        propNames,
+        dataNames,
+        computedNames,
+        methodNames,
+        injectNames,
+    } = supportedMembers;
 
-    unsupportedInjectEntries.forEach((entry) => {
-        const reason = `inject: ${sanitizeTodoCommentText(entry)}`;
-        manualMigrationReasons.push(reason);
-        todoComments.push(`// TODO: migrate inject entry manually: ${sanitizeTodoCommentText(reason)}`);
-    });
+    const allSnippets = collectSetupSnippets(supportedMembers, lifecycleHooks);
 
-    const supportedDataProps = dataProps.filter(({ name }) => {
-        if (isSafeIdentifier(name)) {
-            return true;
-        }
-
-        const reason = `data: ${name} is not a valid JavaScript identifier`;
-        manualMigrationReasons.push(reason);
-        todoComments.push(`// TODO: migrate data entry manually: ${sanitizeTodoCommentText(reason)}`);
-        return false;
-    });
-
-    unsupportedDataEntries.forEach((entry) => {
-        const reason = `data: ${sanitizeTodoCommentText(entry)}`;
-        manualMigrationReasons.push(reason);
-        todoComments.push(`// TODO: migrate data entry manually: ${sanitizeTodoCommentText(reason)}`);
-    });
-
-    const supportedComputedProps = computedProps.filter((prop) => {
-        if (isSafeIdentifier(prop.name)) {
-            return true;
-        }
-
-        const reason = `computed: ${prop.name} is not a valid JavaScript identifier`;
-        manualMigrationReasons.push(reason);
-        todoComments.push(`// TODO: migrate computed entry manually: ${sanitizeTodoCommentText(reason)}`);
-        return false;
-    });
-
-    unsupportedComputedEntries.forEach((entry) => {
-        const reason = `computed: ${sanitizeTodoCommentText(entry)}`;
-        manualMigrationReasons.push(reason);
-        todoComments.push(`// TODO: migrate computed entry manually: ${sanitizeTodoCommentText(reason)}`);
-    });
-
-    const supportedMethodProps = methodProps.filter(({ name }) => {
-        if (isSafeIdentifier(name)) {
-            return true;
-        }
-
-        const reason = `methods: ${name} is not a valid JavaScript identifier`;
-        manualMigrationReasons.push(reason);
-        todoComments.push(`// TODO: migrate method manually: ${sanitizeTodoCommentText(reason)}`);
-        return false;
-    });
-
-    const injectNames = new Set(supportedInjectProps.map((p) => p.localName));
-    const propNames = new Set(propsText ? extractPropNamesFromText(optionsObj) : []);
-    const dataNames = new Set(supportedDataProps.map((p) => p.name));
-    const computedNames = new Set(supportedComputedProps.map((p) => p.name));
-    const methodNames = new Set(supportedMethodProps.map((p) => p.name));
-
-    const ctx: RewriteContext = { propNames, dataNames, computedNames, methodNames, injectNames };
-
-    // These snippets are the only source ranges that will be emitted into
-    // setup. They drive import detection, template refs, inferred emits, and
-    // `this.` rewriting without touching strings or comments elsewhere.
-    const allSnippets: CodeSnippet[] = [
-        ...supportedDataProps.map((p) => ({ text: p.valueText, kind: 'expression' as const })),
-        ...supportedComputedProps.flatMap((p) =>
-            p.kind === 'getter'
-                ? [{ text: p.bodyText, kind: 'body' as const }]
-                : [
-                      { text: p.getterBodyText, kind: 'body' as const },
-                      { text: p.setterBodyText, kind: 'body' as const },
-                  ],
-        ),
-        ...watchProps.map((p) => (p.bodyText ? { text: p.bodyText, kind: 'body' as const } : undefined)),
-        ...supportedMethodProps.map((p) => ({
-            text: p.bodyText,
-            kind: p.rawText === undefined ? ('body' as const) : ('expression' as const),
-        })),
-        ...lifecycleHooks.map((h) => ({ text: h.bodyText, kind: 'body' as const })),
-    ].filter(isDefined);
-
-    const usedComposables = detectUsedComposables(allSnippets, watchProps);
+    const usedComposables = detectUsedComposables(allSnippets, supportedMembers.watchProps);
     const templateRefNames = collectThisRefNames(allSnippets);
 
     if (hasDirectThisPropertyUsage(allSnippets, '$store')) {
@@ -185,7 +132,236 @@ export function collectCompositionScriptState(
             // original `emits` shape as unsupported.
             : collectEmittedEventNames(allSnippets);
 
-    const supportedWatchProps = watchProps.filter((watchProp) => {
+    const regularHooks = lifecycleHooks.filter((h) => h.compositionName !== null);
+    const vueImports = collectVueImports(supportedMembers, templateRefNames, usedComposables, regularHooks, allSnippets);
+    const publicNames = collectPublicNames(supportedMembers);
+    const manualFollowUps = collectManualFollowUps(optionsObj);
+
+    manualMigrationReasons.push(...manualFollowUps.manualMigrationReasons);
+    todoComments.push(...manualFollowUps.todoComments);
+
+    manualMigrationReasons.push(...unsupportedWatchEntries.map((entry) => `watch: ${sanitizeTodoCommentText(entry)}`));
+
+    const componentNameValue = getComponentNameValue(optionsObj);
+
+    const ctx: RewriteContext = { propNames, dataNames, computedNames, methodNames, injectNames };
+
+    // TODO: Silent ignore: duplicate public names across inject/data/computed/
+    // methods are not detected before generating duplicate setup declarations.
+
+    return {
+        registration,
+        ctx,
+        propsText,
+        emitsDefinition,
+        effectiveEmitsKeys,
+        inheritAttrs,
+        componentNameValue,
+        moduleLevelCode,
+        todoComments,
+        supportedInjectProps,
+        supportedDataProps,
+        supportedComputedProps,
+        supportedMethodProps,
+        supportedWatchProps,
+        unsupportedWatchEntries,
+        lifecycleHooks,
+        regularHooks,
+        usedComposables,
+        templateRefNames,
+        publicNames,
+        vueImports,
+        propNames,
+        injectNames,
+        manualMigrationReasons,
+    };
+}
+
+function collectSupportedCompositionMembers(
+    optionsObj: ObjectLiteralExpression,
+    propsText: string | null,
+): SupportedCompositionMembers {
+    const { injectProps, unsupportedEntries: unsupportedInjectEntries } = extractInjectProps(optionsObj);
+    const { dataProps, unsupportedEntries: unsupportedDataEntries } = extractDataProps(optionsObj);
+    const { computedProps, unsupportedEntries: unsupportedComputedEntries } = extractComputedProps(optionsObj);
+    const { watchProps, unsupportedEntries } = extractWatchProps(optionsObj);
+    const unsupportedWatchEntries = [...unsupportedEntries];
+    const methodProps = extractMethodProps(optionsObj);
+    const manualMigrationReasons: string[] = [];
+    const todoComments: string[] = [];
+
+    const supportedInjectProps = collectSupportedNamedProps(
+        injectProps,
+        ({ localName }) => localName,
+        'inject',
+        'inject entry',
+        manualMigrationReasons,
+        todoComments,
+    );
+    collectUnsupportedEntries(
+        unsupportedInjectEntries,
+        'inject',
+        'inject entry',
+        manualMigrationReasons,
+        todoComments,
+    );
+
+    const supportedDataProps = collectSupportedNamedProps(
+        dataProps,
+        ({ name }) => name,
+        'data',
+        'data entry',
+        manualMigrationReasons,
+        todoComments,
+    );
+    collectUnsupportedEntries(unsupportedDataEntries, 'data', 'data entry', manualMigrationReasons, todoComments);
+
+    const supportedComputedProps = collectSupportedNamedProps(
+        computedProps,
+        ({ name }) => name,
+        'computed',
+        'computed entry',
+        manualMigrationReasons,
+        todoComments,
+    );
+    collectUnsupportedEntries(
+        unsupportedComputedEntries,
+        'computed',
+        'computed entry',
+        manualMigrationReasons,
+        todoComments,
+    );
+
+    const supportedMethodProps = collectSupportedNamedProps(
+        methodProps,
+        ({ name }) => name,
+        'methods',
+        'method',
+        manualMigrationReasons,
+        todoComments,
+    );
+
+    const injectNames = new Set(supportedInjectProps.map((p) => p.localName));
+    const propNames = new Set(propsText ? extractPropNamesFromText(optionsObj) : []);
+    const dataNames = new Set(supportedDataProps.map((p) => p.name));
+    const computedNames = new Set(supportedComputedProps.map((p) => p.name));
+    const methodNames = new Set(supportedMethodProps.map((p) => p.name));
+    const supportedWatchProps = collectSupportedWatchProps(
+        watchProps,
+        unsupportedWatchEntries,
+        propNames,
+        dataNames,
+        computedNames,
+        methodNames,
+        injectNames,
+    );
+
+    return {
+        supportedInjectProps,
+        supportedDataProps,
+        supportedComputedProps,
+        supportedMethodProps,
+        supportedWatchProps,
+        watchProps,
+        unsupportedWatchEntries,
+        propNames,
+        dataNames,
+        computedNames,
+        methodNames,
+        injectNames,
+        manualMigrationReasons,
+        todoComments,
+    };
+}
+
+function collectManualFollowUps(
+    optionsObj: ObjectLiteralExpression,
+): ManualMigrationCollection {
+    const manualMigrationReasons: string[] = [];
+    const todoComments: string[] = [];
+
+    // These options can affect runtime registration or lifecycle order. The
+    // generated setup code is still useful, but a successful-looking migration
+    // would be misleading without explicit manual follow-up markers.
+    if (optionsObj.getProperty('provide')) {
+        manualMigrationReasons.push('provide option requires manual migration');
+        todoComments.push('// TODO: migrate `provide` manually — map each key to provide(key, value) calls');
+    }
+    if (optionsObj.getProperty('components')) {
+        manualMigrationReasons.push('components option requires manual verification');
+        todoComments.push('// TODO: verify local component registrations in `components:` — remove if globally registered');
+    }
+    if (optionsObj.getProperty('directives')) {
+        manualMigrationReasons.push('directives option requires manual migration');
+        todoComments.push('// TODO: migrate `directives` manually');
+    }
+    if (optionsObj.getProperty('beforeCreate')) {
+        manualMigrationReasons.push('beforeCreate hook requires manual migration');
+        todoComments.push('// TODO: `beforeCreate` was dropped — move logic to top of setup if needed');
+    }
+    // TODO: Silent ignore: other runtime-relevant top-level options
+    // (route guards, metaInfo, shortcuts, errorCaptured, expose,
+    // extensionApiDevtoolInformation, saveFinish, root spreads, and dynamic
+    // option keys) are not surfaced as manual migration reasons.
+
+    return { manualMigrationReasons, todoComments };
+}
+
+function getComponentNameValue(optionsObj: ObjectLiteralExpression): string | undefined {
+    const componentNameProp = optionsObj.getProperty('name');
+    // TODO: Silent ignore: dynamic component `name` options are passed to
+    // defineOptions instead of being reported as unsupported.
+    return componentNameProp?.isKind(SyntaxKind.PropertyAssignment)
+        ? componentNameProp.asKindOrThrow(SyntaxKind.PropertyAssignment).getInitializer()?.getText()
+        : undefined;
+}
+
+function collectSupportedNamedProps<T>(
+    props: T[],
+    getName: (prop: T) => string,
+    reasonPrefix: string,
+    todoLabel: string,
+    manualMigrationReasons: string[],
+    todoComments: string[],
+): T[] {
+    return props.filter((prop) => {
+        const name = getName(prop);
+
+        if (isSafeIdentifier(name)) {
+            return true;
+        }
+
+        const reason = `${reasonPrefix}: ${name} is not a valid JavaScript identifier`;
+        manualMigrationReasons.push(reason);
+        todoComments.push(`// TODO: migrate ${todoLabel} manually: ${sanitizeTodoCommentText(reason)}`);
+        return false;
+    });
+}
+
+function collectUnsupportedEntries(
+    entries: string[],
+    reasonPrefix: string,
+    todoLabel: string,
+    manualMigrationReasons: string[],
+    todoComments: string[],
+): void {
+    entries.forEach((entry) => {
+        const reason = `${reasonPrefix}: ${sanitizeTodoCommentText(entry)}`;
+        manualMigrationReasons.push(reason);
+        todoComments.push(`// TODO: migrate ${todoLabel} manually: ${sanitizeTodoCommentText(reason)}`);
+    });
+}
+
+function collectSupportedWatchProps(
+    watchProps: WatchProp[],
+    unsupportedWatchEntries: string[],
+    propNames: Set<string>,
+    dataNames: Set<string>,
+    computedNames: Set<string>,
+    methodNames: Set<string>,
+    injectNames: Set<string>,
+): WatchProp[] {
+    return watchProps.filter((watchProp) => {
         if (watchProp.name.includes('.')) {
             unsupportedWatchEntries.push(`${watchProp.name}: nested watch paths are not supported`);
             return false;
@@ -223,8 +399,57 @@ export function collectCompositionScriptState(
 
         return true;
     });
+}
 
+function collectSetupSnippets(
+    supportedMembers: SupportedCompositionMembers,
+    lifecycleHooks: LifecycleHook[],
+): CodeSnippet[] {
+    const {
+        supportedDataProps,
+        supportedComputedProps,
+        supportedMethodProps,
+        watchProps,
+    } = supportedMembers;
+
+    // These snippets are the only source ranges that will be emitted into
+    // setup. They drive import detection, template refs, inferred emits, and
+    // `this.` rewriting without touching strings or comments elsewhere.
+    return [
+        ...supportedDataProps.map((p) => ({ text: p.valueText, kind: 'expression' as const })),
+        ...supportedComputedProps.flatMap((p) =>
+            p.kind === 'getter'
+                ? [{ text: p.bodyText, kind: 'body' as const }]
+                : [
+                      { text: p.getterBodyText, kind: 'body' as const },
+                      { text: p.setterBodyText, kind: 'body' as const },
+                  ],
+        ),
+        ...watchProps.map((p) => (p.bodyText ? { text: p.bodyText, kind: 'body' as const } : undefined)),
+        ...supportedMethodProps.map((p) => ({
+            text: p.bodyText,
+            kind: p.rawText === undefined ? ('body' as const) : ('expression' as const),
+        })),
+        ...lifecycleHooks.map((h) => ({ text: h.bodyText, kind: 'body' as const })),
+    ].filter(isDefined);
+}
+
+function collectVueImports(
+    supportedMembers: SupportedCompositionMembers,
+    templateRefNames: string[],
+    usedComposables: UsedComposables,
+    regularHooks: LifecycleHook[],
+    allSnippets: CodeSnippet[],
+): string[] {
+    const {
+        injectNames,
+        supportedComputedProps,
+        supportedDataProps,
+        supportedInjectProps,
+        supportedWatchProps,
+    } = supportedMembers;
     const vueImports: string[] = [];
+
     if (supportedDataProps.length > 0 || templateRefNames.length > 0) vueImports.push('ref');
     if (supportedComputedProps.length > 0) vueImports.push('computed');
     if (supportedInjectProps.length > 0) vueImports.push('inject');
@@ -235,76 +460,23 @@ export function collectCompositionScriptState(
     if (usedComposables.needsAttrs) vueImports.push('useAttrs');
     if (hasDirectThisPropertyUsage(allSnippets, '$el')) vueImports.push('getCurrentInstance');
 
-    const regularHooks = lifecycleHooks.filter((h) => h.compositionName !== null);
     vueImports.push(...new Set(regularHooks.map((h) => h.compositionName as string)));
 
-    const publicNames = [
+    return vueImports;
+}
+
+function collectPublicNames(supportedMembers: SupportedCompositionMembers): string[] {
+    const {
+        supportedInjectProps,
+        supportedDataProps,
+        supportedComputedProps,
+        supportedMethodProps,
+    } = supportedMembers;
+
+    return [
         ...supportedInjectProps.map((p) => p.localName),
         ...supportedDataProps.map((p) => p.name),
         ...supportedComputedProps.map((p) => p.name),
         ...supportedMethodProps.map((p) => p.name),
     ];
-
-    // These options can affect runtime registration or lifecycle order. The
-    // generated setup code is still useful, but a successful-looking migration
-    // would be misleading without explicit manual follow-up markers.
-    if (optionsObj.getProperty('provide')) {
-        manualMigrationReasons.push('provide option requires manual migration');
-        todoComments.push('// TODO: migrate `provide` manually — map each key to provide(key, value) calls');
-    }
-    if (optionsObj.getProperty('components')) {
-        manualMigrationReasons.push('components option requires manual verification');
-        todoComments.push('// TODO: verify local component registrations in `components:` — remove if globally registered');
-    }
-    if (optionsObj.getProperty('directives')) {
-        manualMigrationReasons.push('directives option requires manual migration');
-        todoComments.push('// TODO: migrate `directives` manually');
-    }
-    if (optionsObj.getProperty('beforeCreate')) {
-        manualMigrationReasons.push('beforeCreate hook requires manual migration');
-        todoComments.push('// TODO: `beforeCreate` was dropped — move logic to top of setup if needed');
-    }
-    // TODO: Silent ignore: other runtime-relevant top-level options
-    // (route guards, metaInfo, shortcuts, errorCaptured, expose,
-    // extensionApiDevtoolInformation, saveFinish, root spreads, and dynamic
-    // option keys) are not surfaced as manual migration reasons.
-
-    manualMigrationReasons.push(...unsupportedWatchEntries.map((entry) => `watch: ${sanitizeTodoCommentText(entry)}`));
-
-    const componentNameProp = optionsObj.getProperty('name');
-    // TODO: Silent ignore: dynamic component `name` options are passed to
-    // defineOptions instead of being reported as unsupported.
-    const componentNameValue = componentNameProp?.isKind(SyntaxKind.PropertyAssignment)
-        ? componentNameProp.asKindOrThrow(SyntaxKind.PropertyAssignment).getInitializer()?.getText()
-        : undefined;
-
-    // TODO: Silent ignore: duplicate public names across inject/data/computed/
-    // methods are not detected before generating duplicate setup declarations.
-
-    return {
-        registration,
-        ctx,
-        propsText,
-        emitsDefinition,
-        effectiveEmitsKeys,
-        inheritAttrs,
-        componentNameValue,
-        moduleLevelCode,
-        todoComments,
-        supportedInjectProps,
-        supportedDataProps,
-        supportedComputedProps,
-        supportedMethodProps,
-        supportedWatchProps,
-        unsupportedWatchEntries,
-        lifecycleHooks,
-        regularHooks,
-        usedComposables,
-        templateRefNames,
-        publicNames,
-        vueImports,
-        propNames,
-        injectNames,
-        manualMigrationReasons,
-    };
 }
