@@ -41,4 +41,22 @@ class InstallTest extends TestCase
         static::assertStringContainsString('MyCoolService1', $tester->getDisplay());
         static::assertStringContainsString('MyCoolService2', $tester->getDisplay());
     }
+
+    public function testCommandReinstallsServices(): void
+    {
+        $manager = $this->createMock(LifecycleManager::class);
+        $manager->expects($this->never())->method('install');
+        $manager->expects($this->once())->method('reinstall')->willReturn([
+            'MyCoolService1',
+            'MyCoolService2',
+        ]);
+
+        $command = new Install($manager);
+        $tester = new CommandTester($command);
+        $tester->execute(['--reinstall' => true]);
+
+        static::assertStringContainsString('Reinstalling services...', $tester->getDisplay());
+        static::assertStringContainsString('MyCoolService1', $tester->getDisplay());
+        static::assertStringContainsString('MyCoolService2', $tester->getDisplay());
+    }
 }

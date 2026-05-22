@@ -60,6 +60,16 @@ class LifecycleManager
         return $this->serviceInstaller->install($context);
     }
 
+    /**
+     * @return array<string> The installed services
+     */
+    public function reinstall(Context $context): array
+    {
+        $this->deleteAllServices($context);
+
+        return $this->serviceInstaller->install($context);
+    }
+
     public function sync(Context $context): void
     {
         $services = $this->getAllServices($context);
@@ -151,6 +161,13 @@ class LifecycleManager
         $criteria->addFilter(new EqualsFilter('selfManaged', true));
 
         return $this->repository->search($criteria, $context)->getEntities();
+    }
+
+    private function deleteAllServices(Context $context): void
+    {
+        foreach ($this->getAllServices($context) as $service) {
+            $this->appLifecycle->delete($service->getName(), ['id' => $service->getId()], $context);
+        }
     }
 
     private function getServicesWithRequirement(string $requirementName, Context $context): AppCollection
