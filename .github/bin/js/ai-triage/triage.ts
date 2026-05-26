@@ -79,6 +79,7 @@ const EnvSchema = z.object({
   AI_TRIAGE_REPO_ROOT: z.string().default("../../../.."),
   AI_TRIAGE_REPO: z.string().default("shopware/shopware"),
   AI_TRIAGE_PREFER_SUBSCRIPTION: z.enum(["0", "1"]).default("0").transform((v) => v === "1"),
+  AI_TRIAGE_OPENCODE_USE_HOST_XDG: z.enum(["0", "1"]).default("0").transform((v) => v === "1"),
 });
 
 const env = EnvSchema.parse(process.env);
@@ -258,7 +259,12 @@ export function buildChildEnv(engine: Engine, xdgDir: string): NodeJS.ProcessEnv
   // the dev's auth tokens. Give opencode its own per-run XDG roots.
   // codex and claude store auth in other locations (~/.codex, ~/.local/share/claude
   // = host XDG_DATA_HOME, macOS Keychain) and need the host values to find them.
-  if (engine === "opencode") {
+  //
+  // AI_TRIAGE_OPENCODE_USE_HOST_XDG=1 disables the isolation so opencode can read
+  // the host's `opencode auth login` OAuth tokens. Required for local replay/dev
+  // workflows where the caller serialises opencode invocations (no WAL race) and
+  // the dev relies on OAuth rather than ANTHROPIC_API_KEY in env.
+  if (engine === "opencode" && !env.AI_TRIAGE_OPENCODE_USE_HOST_XDG) {
     childEnv.XDG_DATA_HOME = xdgDir;
     childEnv.XDG_CONFIG_HOME = xdgDir;
     childEnv.XDG_CACHE_HOME = xdgDir;

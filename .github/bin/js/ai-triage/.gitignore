@@ -4,3 +4,9 @@ issue-*.json
 # Runtime outputs from local runs or CI re-imports
 triage-result.json
 triage-stderr.log
+
+# Replay-benchmark runtime artefacts (not committed; report is)
+replay/issues.json
+replay/fixtures/
+replay/results/
+reports

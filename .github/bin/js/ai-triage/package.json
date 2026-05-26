@@ -9,7 +9,11 @@
     "redact-stream": "node redact-stream.ts",
     "test": "node --test '**/*.spec.ts'",
     "schema:generate": "node generate-schema.ts write",
-    "schema:check": "node generate-schema.ts check"
+    "schema:check": "node generate-schema.ts check",
+    "replay:select": "node replay/select-issues.ts",
+    "replay:run": "node replay/run.ts",
+    "replay:score": "node replay/score.ts",
+    "replay:all": "npm run replay:select && npm run replay:run && npm run replay:score"
   },
   "devDependencies": {
     "@types/node": "24.12.4",

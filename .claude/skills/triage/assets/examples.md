@@ -53,7 +53,7 @@ These are illustrative final outputs. Your actual reasoning, paths, SHAs, and is
 {
   "disposition": "duplicate",
   "severity": "medium",
-  "suggested_labels": ["domain/admin"],
+  "suggested_labels": ["domain/framework"],
   "confidence": 0.88,
   "reasoning": "Issue describes the same defect as #15800: 'sw-media-upload-v2 field cannot be cleared'. gh issue view 15800 shows identical actual_behaviour and reproduction. #15800 is currently open and assigned. No fix on trunk yet (no matching commit in git log).",
   "evidence_quotes": [
@@ -99,7 +99,7 @@ These are illustrative final outputs. Your actual reasoning, paths, SHAs, and is
 {
   "disposition": "feature-request",
   "severity": "low",
-  "suggested_labels": ["domain/admin"],
+  "suggested_labels": ["domain/framework"],
   "confidence": 0.79,
   "reasoning": "Reporter says 'product list does not let me sort by margin'. rg src/Administration/Resources/app/administration/src/module/sw-product/ shows the list view exposes sorting on a fixed column set (name, stock, price) and margin is not a stored column on product. This is a new capability, not a regression from a previously working behaviour. Confidence 0.79 reflects the gap between 'documented limitation' (which would push lower) and 'reasonable user expectation' (which justifies the feature-request label rather than not-a-bug).",
   "evidence_quotes": [

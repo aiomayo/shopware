@@ -17,6 +17,8 @@ import { z } from "zod";
 const MAX_EVIDENCE_QUOTE_LEN = 500;
 const MAX_RECENT_COMMIT_LEN = 200;
 const MAX_REASONING_LEN = 2000;
+const MAX_SUGGESTED_LABELS = 2;
+const MAX_EVIDENCE_QUOTES = 5;
 
 // `.strict()` rejects unknown keys at parse time instead of silently stripping
 // them. This matches what codex `--output-schema` and claude `--json-schema`
@@ -27,10 +29,10 @@ const MAX_REASONING_LEN = 2000;
 export const TriageOutput = z.object({
   disposition: z.enum(["valid-bug", "duplicate", "needs-info", "not-a-bug", "feature-request"]),
   severity: z.enum(["low", "medium", "high", "critical"]),
-  suggested_labels: z.array(z.string()).min(1).max(2),
+  suggested_labels: z.array(z.string()).min(1).max(MAX_SUGGESTED_LABELS),
   confidence: z.number().min(0).max(1),
   reasoning: z.string().max(MAX_REASONING_LEN),
-  evidence_quotes: z.array(z.string().max(MAX_EVIDENCE_QUOTE_LEN)).min(1).max(5),
+  evidence_quotes: z.array(z.string().max(MAX_EVIDENCE_QUOTE_LEN)).min(1).max(MAX_EVIDENCE_QUOTES),
   duplicate_of: z.number().nullable(),
   missing_template_fields: z.array(z.string()),
   affected_paths: z.array(z.string()),
@@ -91,11 +93,16 @@ export function assertNoSecretsInOutput(output: TriageOutput): void {
 }
 
 /**
- * Lenient normalisation: truncate any string fields that exceed their schema cap
- * before Zod validation. Engine-side enforcement (codex `--output-schema`, claude
- * `--json-schema`) catches this at the model level for those engines, but opencode
- * has no equivalent flag and occasionally overshoots. Truncating with a "…[truncated]"
- * marker is strictly safer than failing the whole run for a non-critical overshoot.
+ * Lenient normalisation: bring any fields that overshot their schema cap back
+ * in range before Zod validation. Engine-side enforcement (codex
+ * `--output-schema`, claude `--json-schema`) is best-effort — observed claude
+ * runs occasionally emit 3+ `suggested_labels` despite `maxItems: 2`, and
+ * opencode has no schema-enforcement flag at all. Truncating with a
+ * "…[truncated]" marker (strings) or `.slice(0, max)` (arrays) is strictly
+ * safer than failing the whole run for a non-critical overshoot.
+ *
+ * Floor violations (`min(1)` on an empty array) are NOT patched up — those
+ * indicate the agent skipped real reasoning and should fail strict.
  *
  * Mutates the input in place. Caller passes the parsed-but-not-validated JSON.
  */
@@ -103,15 +110,21 @@ export function truncateOversizedFields(parsed: unknown): void {
   if (typeof parsed !== "object" || parsed === null) return;
   const obj = parsed as Record<string, unknown>;
 
-  const SUFFIX = "…[truncated]"; // 12 chars in JS string-length
+  const SUFFIX = "…[truncated]";
   const truncate = (s: string, max: number): string =>
     s.length <= max ? s : s.slice(0, max - SUFFIX.length) + SUFFIX;
 
   if (typeof obj.reasoning === "string") {
     obj.reasoning = truncate(obj.reasoning, MAX_REASONING_LEN);
   }
+  if (Array.isArray(obj.suggested_labels) && obj.suggested_labels.length > MAX_SUGGESTED_LABELS) {
+    obj.suggested_labels = obj.suggested_labels.slice(0, MAX_SUGGESTED_LABELS);
+  }
   if (Array.isArray(obj.evidence_quotes)) {
-    obj.evidence_quotes = obj.evidence_quotes.map((q) =>
+    const capped = obj.evidence_quotes.length > MAX_EVIDENCE_QUOTES
+      ? obj.evidence_quotes.slice(0, MAX_EVIDENCE_QUOTES)
+      : obj.evidence_quotes;
+    obj.evidence_quotes = capped.map((q) =>
       typeof q === "string" ? truncate(q, MAX_EVIDENCE_QUOTE_LEN) : q,
     );
   }
