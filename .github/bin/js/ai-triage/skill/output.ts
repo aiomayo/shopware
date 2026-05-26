@@ -15,6 +15,7 @@
 import { z } from "zod";
 
 const MAX_EVIDENCE_QUOTE_LEN = 500;
+const MAX_EVIDENCE_QUOTES = 5;
 const MAX_RECENT_COMMIT_LEN = 200;
 const MAX_REASONING_LEN = 2000;
 
@@ -30,7 +31,7 @@ export const TriageOutput = z.object({
   suggested_labels: z.array(z.string()).min(1).max(2),
   confidence: z.number().min(0).max(1),
   reasoning: z.string().max(MAX_REASONING_LEN),
-  evidence_quotes: z.array(z.string().max(MAX_EVIDENCE_QUOTE_LEN)).min(1).max(5),
+  evidence_quotes: z.array(z.string().max(MAX_EVIDENCE_QUOTE_LEN)).min(1).max(MAX_EVIDENCE_QUOTES),
   duplicate_of: z.number().nullable(),
   missing_template_fields: z.array(z.string()),
   affected_paths: z.array(z.string()),
@@ -91,11 +92,21 @@ export function assertNoSecretsInOutput(output: TriageOutput): void {
 }
 
 /**
- * Lenient normalisation: truncate any string fields that exceed their schema cap
- * before Zod validation. Engine-side enforcement (codex `--output-schema`, claude
- * `--json-schema`) catches this at the model level for those engines, but opencode
- * has no equivalent flag and occasionally overshoots. Truncating with a "…[truncated]"
- * marker is strictly safer than failing the whole run for a non-critical overshoot.
+ * Lenient normalisation before strict Zod validation.
+ *
+ * Two classes of agent-output drift this corrects:
+ *
+ *  1. **Oversized string fields** (reasoning / evidence_quotes / recent_commits)
+ *     — engine-side schema enforcement (codex `--output-schema`, claude
+ *     `--json-schema`) catches this at the model level for those engines,
+ *     but opencode has no equivalent flag and occasionally overshoots.
+ *     Truncated with a "…[truncated]" marker.
+ *
+ *  2. **Issue/PR refs as strings instead of numbers** (related_issues /
+ *     related_prs / duplicate_of) — observed in real runs: the agent
+ *     sometimes emits `"#14229"` or `"14229"` instead of `14229`. Strip a
+ *     leading `#`, then coerce to a finite integer. Non-parseable values
+ *     pass through unchanged → Zod will throw loudly downstream.
  *
  * Mutates the input in place. Caller passes the parsed-but-not-validated JSON.
  */
@@ -111,14 +122,36 @@ export function truncateOversizedFields(parsed: unknown): void {
     obj.reasoning = truncate(obj.reasoning, MAX_REASONING_LEN);
   }
   if (Array.isArray(obj.evidence_quotes)) {
-    obj.evidence_quotes = obj.evidence_quotes.map((q) =>
-      typeof q === "string" ? truncate(q, MAX_EVIDENCE_QUOTE_LEN) : q,
-    );
+    // Cap array length AND per-quote length. Agents occasionally emit 6-10
+    // quotes; keep the first MAX_EVIDENCE_QUOTES (agents typically order by
+    // perceived relevance).
+    obj.evidence_quotes = obj.evidence_quotes
+      .slice(0, MAX_EVIDENCE_QUOTES)
+      .map((q) => (typeof q === "string" ? truncate(q, MAX_EVIDENCE_QUOTE_LEN) : q));
   }
   if (Array.isArray(obj.recent_commits_in_area)) {
     obj.recent_commits_in_area = obj.recent_commits_in_area.map((c) =>
       typeof c === "string" ? truncate(c, MAX_RECENT_COMMIT_LEN) : c,
     );
+  }
+
+  // Coerce issue/PR refs from string to number. Accepts `"14229"` and `"#14229"`;
+  // leaves non-parseable values untouched so Zod surfaces them.
+  const toIssueNumber = (v: unknown): unknown => {
+    if (typeof v !== "string") return v;
+    const trimmed = v.trim().replace(/^#/, "");
+    if (!/^\d+$/.test(trimmed)) return v;
+    const n = Number(trimmed);
+    return Number.isFinite(n) && n > 0 ? n : v;
+  };
+  if (Array.isArray(obj.related_issues)) {
+    obj.related_issues = obj.related_issues.map(toIssueNumber);
+  }
+  if (Array.isArray(obj.related_prs)) {
+    obj.related_prs = obj.related_prs.map(toIssueNumber);
+  }
+  if (typeof obj.duplicate_of === "string") {
+    obj.duplicate_of = toIssueNumber(obj.duplicate_of);
   }
 }
 

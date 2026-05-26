@@ -1,29 +1,51 @@
 /**
- * AI Triage Agent — Shopware AI Tooling.
+ * AI Triage Agent — Shopware AI Tooling (wrapper-fed mode).
  *
- * Pipeline: load issue (file or live fetch) → PII-redact → spawn agentic CLI
- *   (opencode / codex / claude) from sw1-root with full shell + gh tool access
- *   → extract the agent's final message via the engine's structured-output mode
- *   → JSON-parse → Zod-validate → print.
+ * This file is ONE of two entry points to the triage skill:
+ *
+ *   1. Wrapper-fed (this file) — deterministic pipeline with PII-redaction +
+ *      Zod-validated JSON output + cost telemetry. Used by CI and for local
+ *      eval / fixture replay. Output: JSON.
+ *
+ *   2. Interactive (no wrapper) — a developer in Claude Code / opencode /
+ *      Codex CLI types something like "triage issue #16599"; the runtime
+ *      auto-loads `.claude/skills/triage/SKILL.md` via description match.
+ *      The agent fetches the issue itself via `gh` and emits Markdown
+ *      directly in the terminal. This is the day-to-day developer path —
+ *      this file plays no role in it.
+ *
+ * Pipeline (wrapper-fed): load issue (file or live fetch) → PII-redact →
+ *   spawn agentic CLI (opencode / codex / claude) from sw1-root with full
+ *   shell + gh tool access → extract the agent's final message via the
+ *   engine's structured-output mode → JSON-parse → Zod-validate → print.
  *
  * Each engine runs in an isolated XDG_DATA_HOME directory so parallel runs cannot
  * race on opencode's SQLite WAL (or any other per-engine state cache). The temp
  * directory is removed on exit.
  *
  * Usage (Node 22 LTS+ runs TypeScript directly via `node script.ts`, no transpiler needed):
- *   # local replay from a fixture
- *   npm run triage -- --issue issue-16599.json
+ *   # All `npm run triage` commands must be executed inside this wrapper's directory
+ *   # (the `package.json` lives here, NOT at the sw1 repo root):
+ *   cd .github/bin/js/ai-triage
+ *   npm ci  # one-time install
  *
- *   # live fetch via gh CLI (CI-friendly)
+ *   # CI — workflow_dispatch on `ai-triage.yml` runs this against a live issue.
+ *
+ *   # Local replay from a captured fixture (deterministic, no API call to GitHub).
+ *   npm run triage -- --issue tests/fixtures/issue-16599.json
+ *
+ *   # Local live fetch (CI-parity check before pushing workflow changes).
  *   npm run triage -- --issue-number 16599
  *
- *   # switch engine (CI default: opencode; devs can pick whatever they have)
+ *   # Switch engine (default opencode; devs pick whichever CLI they have installed).
  *   AI_TRIAGE_ENGINE=codex    npm run triage -- --issue-number 16599
- *   AI_TRIAGE_ENGINE=opencode npm run triage -- --issue-number 16599
  *   AI_TRIAGE_ENGINE=claude   npm run triage -- --issue-number 16599
  *
- *   # override repo for live fetch
+ *   # Override repo for live fetch.
  *   AI_TRIAGE_REPO=shopware/shopware npm run triage -- --issue-number 16599
+ *
+ * For interactive use (the common case) just talk to Claude Code / opencode in
+ * the sw1 repo — no shell command needed.
  *
  * Env (engine-scoped models so cross-engine eval cannot mismatch):
  *   AI_TRIAGE_ENGINE          default: opencode (opencode|codex|claude)

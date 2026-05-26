@@ -32,11 +32,11 @@ The strict JSON Schema is published at the URL in this skill's `output-schema-ur
 | `confidence` | yes | Number 0.0–1.0 (see calibration in CLASSIFICATION.md) |
 | `reasoning` | yes | 2–5 sentences, max 2000 chars, must reference shell findings |
 | `evidence_quotes` | yes | 1–5 verbatim spans, max 500 chars each (wrapper truncates overshoots) |
-| `duplicate_of` | yes | Issue-number integer if `disposition == "duplicate"`, else `null` |
+| `duplicate_of` | yes | Plain integer issue number (e.g. `15800` — NOT `"15800"`, NOT `"#15800"`) if `disposition == "duplicate"`, else `null` |
 | `missing_template_fields` | yes | Informational — empty array if all template sections present |
 | `affected_paths` | yes | File paths you identified via `rg`/`find` (empty array if none found) |
-| `related_issues` | yes | Integers — related but NOT `duplicate_of` |
-| `related_prs` | yes | Integers — merged PR numbers, e.g. recent fixes in the area |
+| `related_issues` | yes | Array of plain integers (e.g. `[12345, 12346]` — NOT `["#12345"]`, NOT `["12345"]`). Related but NOT `duplicate_of`. |
+| `related_prs` | yes | Array of plain integers — merged PR numbers, same shape rule as `related_issues` |
 | `recent_commits_in_area` | yes | Short `git log --oneline` entries, max 200 chars each |
 | `change_size_estimate` | yes | One enum: `quick-fix` (<30 LOC single file), `small` (single component), `medium` (cross-component), `large` (architectural), `unknown` |
 

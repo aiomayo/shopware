@@ -125,6 +125,56 @@ test("truncateOversizedFields + Zod: oversized output now passes validation", ()
   assert.equal(parsed.evidence_quotes[0].length, 500);
 });
 
+test("truncateOversizedFields: coerces issue/PR refs from string to number", () => {
+  const obj = {
+    related_issues: ["14229", "#15340", 16379],
+    related_prs: ["#16632"],
+    duplicate_of: "#15800",
+  } as Record<string, unknown>;
+  truncateOversizedFields(obj);
+  assert.deepEqual(obj.related_issues, [14229, 15340, 16379]);
+  assert.deepEqual(obj.related_prs, [16632]);
+  assert.equal(obj.duplicate_of, 15800);
+});
+
+test("truncateOversizedFields: leaves non-numeric strings as-is so Zod fails loudly", () => {
+  const obj = {
+    related_issues: ["not-a-number", "13.5"],
+  } as Record<string, unknown>;
+  truncateOversizedFields(obj);
+  assert.deepEqual(obj.related_issues, ["not-a-number", "13.5"]);
+});
+
+test("truncateOversizedFields: caps evidence_quotes array length to 5", () => {
+  const obj = {
+    evidence_quotes: ["a", "b", "c", "d", "e", "f", "g"],
+  } as Record<string, unknown>;
+  truncateOversizedFields(obj);
+  assert.deepEqual(obj.evidence_quotes, ["a", "b", "c", "d", "e"]);
+});
+
+test("truncateOversizedFields + Zod: agent that emits 7 quotes still passes validation", () => {
+  const raw = validOutput({
+    evidence_quotes: ["q1", "q2", "q3", "q4", "q5", "q6", "q7"],
+  });
+  truncateOversizedFields(raw);
+  const parsed = TriageOutput.parse(raw); // no throw
+  assert.equal(parsed.evidence_quotes.length, 5);
+});
+
+test("truncateOversizedFields + Zod: stringified issue refs pass validation after normalisation", () => {
+  const raw = validOutput({
+    related_issues: ["14229", "#15340"],
+    related_prs: ["#16632", 16379],
+    duplicate_of: "#15800",
+  });
+  truncateOversizedFields(raw);
+  const parsed = TriageOutput.parse(raw); // no throw
+  assert.deepEqual(parsed.related_issues, [14229, 15340]);
+  assert.deepEqual(parsed.related_prs, [16632, 16379]);
+  assert.equal(parsed.duplicate_of, 15800);
+});
+
 // ---- TriageOutput .strict() — unknown keys rejected ---------------------
 
 test("TriageOutput.strict: rejects unknown keys instead of silently stripping", () => {
