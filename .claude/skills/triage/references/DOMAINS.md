@@ -121,6 +121,20 @@ Storefront feature carve-outs:
 
 Mostly `framework` (search infrastructure). `src/Elasticsearch/Product/` and a few inventory-specific indexers are `inventory`. Read the attribute when in doubt.
 
+## Required second label for `domain/framework`
+
+When the primary label is `domain/framework`, **always add a `component/*` label as the second** to indicate which layer is affected. Pick exactly one:
+
+| Component label | When |
+|---|---|
+| `component/core` | Backend / PHP under `src/Core/`, `src/Elasticsearch/Framework/`, `src/Core/Framework/`, migrations, DI configs |
+| `component/administration` | Admin UI under `src/Administration/Resources/app/administration/` |
+| `component/storefront` | Storefront under `src/Storefront/` (Twig, JS plugins, SCSS, theme build) |
+
+If multiple layers are touched, pick the one where the user observes the bug (usually `storefront` or `administration` over `core`).
+
+For other domain labels (`domain/inventory`, `domain/checkout`, `domain/discovery`, `domain/crm-after-sales`), a second label is optional and only added if a clear second affected area exists.
+
 ## Labels with no code-side `#[Package(...)]` equivalent
 
 These labels exist on `shopware/shopware` but have no `#[Package(...)]` counterpart in this repo. Apply them based on issue topic / context, not on file paths.
