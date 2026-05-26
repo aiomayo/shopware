@@ -36,10 +36,7 @@
  *   AI_TRIAGE_GH_TIMEOUT_MS   default: 30000 (gh api fetch timeout)
  *   AI_TRIAGE_MAX_BUDGET_USD  default: 1.50 (claude-only, hard cap per run; no-op under OAuth subscription)
  *   AI_TRIAGE_VERBOSE         set to 1 to stream engine stdout/stderr (off by default)
- *   AI_TRIAGE_REPO_ROOT       default: ../../../.. (resolved from script dir to sw1 repo root)
  *   AI_TRIAGE_REPO            default: shopware/shopware (for --issue-number live fetch)
- *   AI_TRIAGE_PREFER_SUBSCRIPTION  set to 1 with engine=claude to force OAuth (Claude Code subscription)
- *                                  instead of API key — useful for local devs who have both
  */
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
@@ -49,7 +46,7 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { redactPii } from "./pii-patterns.ts";
-import { SkillInput, RawIssue, extractTemplateFields, detectLanguage, truncateRawIssueInput } from "./skill/input.ts";
+import { SkillInput, RawIssue, extractTemplateFields, truncateRawIssueInput } from "./skill/input.ts";
 import { formatPromptWithInput, stripFrontmatter } from "./skill/prompt.ts";
 import { TriageOutput, parseJsonFromText, truncateOversizedFields, assertNoSecretsInOutput } from "./skill/output.ts";
 
@@ -76,10 +73,13 @@ const EnvSchema = z.object({
   AI_TRIAGE_GH_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   AI_TRIAGE_MAX_BUDGET_USD: z.coerce.number().positive().default(1.5),
   AI_TRIAGE_VERBOSE: z.enum(["0", "1"]).default("0").transform((v) => v === "1"),
-  AI_TRIAGE_REPO_ROOT: z.string().default("../../../.."),
   AI_TRIAGE_REPO: z.string().default("shopware/shopware"),
-  AI_TRIAGE_PREFER_SUBSCRIPTION: z.enum(["0", "1"]).default("0").transform((v) => v === "1"),
 });
+
+// Resolved from the script directory to the sw1 repo root. Fixed offset —
+// the script lives at `.github/bin/js/ai-triage/triage.ts`, so four `..` hops
+// reach the repo root. There is no scenario where a different value is correct.
+const REPO_ROOT_OFFSET = "../../../..";
 
 const env = EnvSchema.parse(process.env);
 const VERBOSE = env.AI_TRIAGE_VERBOSE;
@@ -115,8 +115,6 @@ interface UsageStats {
   output_tokens: number | null;
   total_tokens: number | null;
   total_cost_usd: number | null;
-  /** Free-form provider-specific extras (e.g. cache_read_tokens) — never `undefined`. */
-  raw: Record<string, unknown>;
 }
 
 const EMPTY_USAGE: UsageStats = {
@@ -124,14 +122,7 @@ const EMPTY_USAGE: UsageStats = {
   output_tokens: null,
   total_tokens: null,
   total_cost_usd: null,
-  raw: {},
 };
-
-export function parseEngine(raw: string | undefined): Engine {
-  const v = (raw ?? "opencode").toLowerCase();
-  if (v === "opencode" || v === "codex" || v === "claude") return v;
-  throw new Error(`AI_TRIAGE_ENGINE must be opencode|codex|claude (got "${raw}")`);
-}
 
 /**
  * Run a child process with a hard timeout. Returns stdout/stderr and exit code,
@@ -263,12 +254,6 @@ export function buildChildEnv(engine: Engine, xdgDir: string): NodeJS.ProcessEnv
     childEnv.XDG_CONFIG_HOME = xdgDir;
     childEnv.XDG_CACHE_HOME = xdgDir;
   }
-  // AI_TRIAGE_PREFER_SUBSCRIPTION=1 with engine=claude forces Claude Code to use OAuth
-  // credentials (claude login) instead of the API key, even if ANTHROPIC_API_KEY is in env.
-  // Useful for local devs who have both a Claude.ai Pro/Max subscription and an API key.
-  if (engine === "claude" && env.AI_TRIAGE_PREFER_SUBSCRIPTION) {
-    delete childEnv.ANTHROPIC_API_KEY;
-  }
   return childEnv;
 }
 
@@ -276,25 +261,13 @@ export function buildChildEnv(engine: Engine, xdgDir: string): NodeJS.ProcessEnv
  * Parse opencode's `--format json` stream (JSONL events) and return the assistant's
  * final visible text.
  *
- * opencode (verified against 1.15.5) emits events of various types over its agentic
- * loop. The final assistant answer arrives in one of these shapes — we tolerate all
- * four because opencode's event schema is not formally documented and the JSON
- * field names have drifted across versions:
- *
- *   1. {role: "assistant", content: "<text>"}                      — flat string
- *   2. {type: "text", part: {text: "<message>"}}                  — opencode 1.15.5 verified
- *   3. {type: "message", role: "assistant", content: [{text:...}]} — content-array (legacy/future)
- *   4. {type: "complete", message: "<text>"}                       — terminal event (legacy/future)
- *
- * Verified shape (opencode 1.15.5, captured 2026-05-20):
- *   {"type":"text", "timestamp":..., "sessionID":"ses_...", "part":{"id":"prt_...",
- *    "messageID":"msg_...", "sessionID":"...", "type":"text", "text":"<JSON output>",
- *    "time":{...}}}
+ * Verified shape (opencode 1.15.5, captured 2026-05-20 — `package.json` pins this version):
+ *   {"type":"text", "part":{"text":"<message>", ...}, ...}
  *
  * Strategy: collect every matching event, return the LAST one. If opencode emits
  * a shape we don't recognise, we throw "no assistant message found" loudly
- * rather than silently misparse. When opencode publishes a typed SDK or schema,
- * replace this with a Zod-validated event union.
+ * rather than silently misparse. When opencode bumps and changes the shape, the
+ * next run will fail loudly with a clear message — adjust the parser there.
  */
 // -- Usage extractors ----------------------------------------------------
 //
@@ -317,7 +290,6 @@ export function extractOpencodeUsage(stdout: string): UsageStats {
   let input: number | null = null;
   let output: number | null = null;
   let cost: number | null = null;
-  const raw: Record<string, unknown> = {};
   for (const line of stdout.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) continue;
@@ -325,14 +297,15 @@ export function extractOpencodeUsage(stdout: string): UsageStats {
     try { evt = JSON.parse(trimmed); } catch { continue; }
     if (typeof evt !== "object" || evt === null) continue;
     const rec = evt as Record<string, unknown>;
-    // Many opencode events nest tokens under `tokens: {...}` or `usage: {...}`.
     const tokenBlock = (rec.tokens ?? rec.usage) as Record<string, unknown> | undefined;
     if (tokenBlock && typeof tokenBlock === "object") {
-      const ip = pickNumber(tokenBlock, ["input", "prompt", "input_tokens", "prompt_tokens"]);
-      const op = pickNumber(tokenBlock, ["output", "completion", "output_tokens", "completion_tokens"]);
+      // Two established naming conventions: Anthropic uses `input_tokens` / `output_tokens`,
+      // OpenAI uses `prompt_tokens` / `completion_tokens`. opencode is multi-provider; the
+      // emitted block typically mirrors whichever upstream API was called.
+      const ip = pickNumber(tokenBlock, ["input_tokens", "prompt_tokens"]);
+      const op = pickNumber(tokenBlock, ["output_tokens", "completion_tokens"]);
       if (ip !== null) input = ip;
       if (op !== null) output = op;
-      Object.assign(raw, tokenBlock);
     }
     const costNum = pickNumber(rec, ["cost", "total_cost_usd", "cost_usd"]);
     if (costNum !== null) cost = costNum;
@@ -342,41 +315,26 @@ export function extractOpencodeUsage(stdout: string): UsageStats {
     output_tokens: output,
     total_tokens: input !== null && output !== null ? input + output : null,
     total_cost_usd: cost,
-    raw,
   };
 }
 
 /**
- * codex emits usage to stderr as `token usage: ...` lines in its event log.
- * Tolerant best-effort regex against the visible format on 0.131.x.
+ * codex usage telemetry is not currently captured — the actual stderr/stdout
+ * format of @openai/codex@0.131.0 has not been verified against this wrapper.
+ * Returns null fields; when codex is exercised in production, observe its real
+ * output format and implement a parser here. Until then, this stub keeps the
+ * UsageStats contract consistent across all three engines.
+ *
+ * TODO: capture real codex usage emission and parse it.
  */
-export function extractCodexUsage(stderrAndStdout: string): UsageStats {
-  // Visible format: `tokens: input=12345 output=678 total=13023`
-  let input: number | null = null;
-  let output: number | null = null;
-  let total: number | null = null;
-  const re = /\btokens?:?\s*(?:input[=:\s]+(\d+))?[\s,]*(?:output[=:\s]+(\d+))?[\s,]*(?:total[=:\s]+(\d+))?/gi;
-  for (const m of stderrAndStdout.matchAll(re)) {
-    if (m[1]) input = Math.max(input ?? 0, Number(m[1]));
-    if (m[2]) output = Math.max(output ?? 0, Number(m[2]));
-    if (m[3]) total = Math.max(total ?? 0, Number(m[3]));
-  }
-  // codex doesn't surface cost in stderr; leave as null.
-  return {
-    input_tokens: input,
-    output_tokens: output,
-    total_tokens: total ?? (input !== null && output !== null ? input + output : null),
-    total_cost_usd: null,
-    raw: {},
-  };
+export function extractCodexUsage(_stderrAndStdout: string): UsageStats {
+  return EMPTY_USAGE;
 }
 
 /**
  * claude `--output-format json` envelope shape (verified against
  * @anthropic-ai/claude-code@2.1.144):
- *   { result, total_cost_usd, usage: { input_tokens, output_tokens,
- *     cache_read_input_tokens?, cache_creation_input_tokens? }, ... }
- * Future fields fall into `raw` for the workflow summary.
+ *   { result, total_cost_usd, usage: { input_tokens, output_tokens, ... }, ... }
  */
 export function extractClaudeUsage(envelopeRaw: unknown): UsageStats {
   if (typeof envelopeRaw !== "object" || envelopeRaw === null) return EMPTY_USAGE;
@@ -385,23 +343,16 @@ export function extractClaudeUsage(envelopeRaw: unknown): UsageStats {
   const cost = pickNumber(rec, ["total_cost_usd", "cost_usd"]);
   let input: number | null = null;
   let output: number | null = null;
-  const raw: Record<string, unknown> = {};
   if (typeof usage === "object" && usage !== null) {
     const u = usage as Record<string, unknown>;
     input = pickNumber(u, ["input_tokens", "prompt_tokens"]);
     output = pickNumber(u, ["output_tokens", "completion_tokens"]);
-    for (const k of Object.keys(u)) {
-      if (k !== "input_tokens" && k !== "output_tokens" && k !== "prompt_tokens" && k !== "completion_tokens") {
-        raw[k] = u[k];
-      }
-    }
   }
   return {
     input_tokens: input,
     output_tokens: output,
     total_tokens: input !== null && output !== null ? input + output : null,
     total_cost_usd: cost,
-    raw,
   };
 }
 
@@ -413,6 +364,11 @@ function pickNumber(obj: Record<string, unknown>, keys: ReadonlyArray<string>): 
   return null;
 }
 
+const OpencodeTextEvent = z.object({
+  type: z.literal("text"),
+  part: z.object({ text: z.string() }).passthrough(),
+}).passthrough();
+
 export function extractOpencodeFinalMessage(stdout: string): string {
   const candidates: string[] = [];
   for (const line of stdout.split(/\r?\n/)) {
@@ -420,30 +376,8 @@ export function extractOpencodeFinalMessage(stdout: string): string {
     if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) continue;
     let evt: unknown;
     try { evt = JSON.parse(trimmed); } catch { continue; }
-    if (typeof evt !== "object" || evt === null) continue;
-    const rec = evt as Record<string, unknown>;
-
-    // Shape 1 (opencode 1.15.5 — VERIFIED): {type:"text", part:{type:"text", text:"..."}}.
-    if (rec["type"] === "text" && typeof rec["part"] === "object" && rec["part"] !== null) {
-      const part = rec["part"] as Record<string, unknown>;
-      if (typeof part["text"] === "string") {
-        candidates.push(part["text"]);
-        continue;
-      }
-    }
-    // Legacy / future shapes — kept as defensive fallbacks. Drop these once we have
-    // a stable opencode schema reference and pin against it.
-    if (rec["role"] === "assistant" && typeof rec["content"] === "string") {
-      candidates.push(rec["content"] as string);
-    } else if (rec["type"] === "message" && rec["role"] === "assistant" && Array.isArray(rec["content"])) {
-      const parts = (rec["content"] as Array<unknown>)
-        .map((p) => (typeof p === "object" && p !== null && typeof (p as Record<string, unknown>)["text"] === "string"
-          ? ((p as Record<string, unknown>)["text"] as string) : null))
-        .filter((s): s is string => s !== null);
-      if (parts.length > 0) candidates.push(parts.join(""));
-    } else if (rec["type"] === "complete" && typeof rec["message"] === "string") {
-      candidates.push(rec["message"] as string);
-    }
+    const parsed = OpencodeTextEvent.safeParse(evt);
+    if (parsed.success) candidates.push(parsed.data.part.text);
   }
   if (candidates.length === 0) {
     throw new Error(`no assistant message found in opencode JSON stream (got ${stdout.length} bytes, ${stdout.split(/\r?\n/).length} lines)`);
@@ -534,13 +468,10 @@ async function runCodex(prompt: string, repoRoot: string, schemaPath: string, xd
   return { finalText, usage };
 }
 
-// Claude --output-format json wraps the final assistant text in one of two
-// envelope shapes depending on CLI version. The discriminated union surfaces
-// drift loudly via Zod rather than the previous typeof+as cast ladder.
-export const ClaudeEnvelope = z.union([
-  z.object({ result: z.string() }),
-  z.object({ result: z.object({ text: z.string() }) }),
-]);
+// Claude --output-format json envelope shape (verified against
+// @anthropic-ai/claude-code@2.1.144 — pinned in package.json). If a future
+// version changes the shape, Zod will throw loudly with a clear error.
+export const ClaudeEnvelope = z.object({ result: z.string() }).passthrough();
 
 async function runClaude(prompt: string, repoRoot: string, schemaPath: string, xdgDir: string): Promise<{ finalText: string; usage: UsageStats }> {
   const model = env.AI_TRIAGE_ANTHROPIC_MODEL;
@@ -600,7 +531,7 @@ async function runClaude(prompt: string, repoRoot: string, schemaPath: string, x
     throw new Error(`claude: failed to parse output envelope: ${(err as Error).message}\nstdout tail: ${stdout.slice(-500)}`);
   }
   const envelope = ClaudeEnvelope.parse(envelopeRaw);
-  const finalText = typeof envelope.result === "string" ? envelope.result : envelope.result.text;
+  const finalText = envelope.result;
   // claude `--output-format json` envelope carries usage + total_cost_usd alongside
   // the result; harvest both for the per-run summary. Tolerant to schema additions.
   const usage = extractClaudeUsage(envelopeRaw);
@@ -679,7 +610,7 @@ function fetchIssueLive(issueNumber: number): RawIssue {
       "api",
       `repos/${repo}/issues/${issueNumber}`,
       "--jq",
-      "{issue_id: .number, title: .title, body: .body, labels: [.labels[].name], state: .state}",
+      "{issue_id: .number, title: .title, body: .body, labels: [.labels[].name]}",
     ],
     { encoding: "utf8", timeout: ghTimeout },
   );
@@ -743,7 +674,6 @@ async function main() {
     title: redactedTitle,
     body: redactedBody,
     labels: redactedLabels,
-    language_detected: detectLanguage(redactedBody),
     template_fields: extractTemplateFields(redactedBody),
   });
 
@@ -752,7 +682,7 @@ async function main() {
     process.stderr.write(`[redactor] template_fields: ${JSON.stringify(skillInput.template_fields, null, 2)}\n`);
   }
 
-  const repoRoot = resolve(__dirname, env.AI_TRIAGE_REPO_ROOT);
+  const repoRoot = resolve(__dirname, REPO_ROOT_OFFSET);
   // Agent Skills convention: skills live at `<project-root>/.claude/skills/<name>/SKILL.md`.
   // This is the same path Claude Code, opencode, Codex CLI auto-load — so the wrapper and
   // local interactive use share one source of truth.
@@ -785,7 +715,6 @@ async function main() {
     usage: result.usage,
     redaction_counts: redactionCounts,
     template_fields: skillInput.template_fields,
-    language_detected: skillInput.language_detected,
     triage: result.output,
   }, null, 2));
 }

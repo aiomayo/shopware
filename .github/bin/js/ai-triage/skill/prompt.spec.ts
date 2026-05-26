@@ -53,7 +53,6 @@ test("formatPromptWithInput: wraps input JSON in <input_json> tags", () => {
     title: "T",
     body: "B",
     labels: [],
-    language_detected: "en",
     template_fields: {
       shopware_version: null,
       affected_area: null,

@@ -35,8 +35,8 @@ The output is **read-only**: the agent does not post comments, label, or modify 
 ├── redact-stream.ts                        post-run output redactor (used by CI)
 ├── pii-patterns.ts                         shared PII regex patterns (input + output redaction)
 ├── skill/
-│   ├── input.ts                            RawIssue, template-fields, language detection, SkillInput
-│   ├── input.spec.ts                       unit tests — extractTemplateFields, detectLanguage, SkillInput Zod
+│   ├── input.ts                            RawIssue, template-fields, SkillInput, size caps
+│   ├── input.spec.ts                       unit tests — extractTemplateFields, SkillInput Zod, size caps
 │   ├── output.ts                           TriageOutput (Zod) + parseJsonFromText + truncateOversizedFields
 │   ├── output.spec.ts                      unit tests — parseJsonFromText + truncate + schema validation
 │   ├── prompt.ts                           stripFrontmatter + formatPromptWithInput
@@ -205,7 +205,7 @@ Key fields:
 | `recent_commits_in_area` | string[] | short `git log --oneline` entries, max 200 chars each |
 | `change_size_estimate` | enum | `quick-fix`, `small`, `medium`, `large`, `unknown` |
 
-The wrapper additionally records `engine` + `wall_clock_ms` + `redaction_counts` + `template_fields` + `language_detected` in the top-level result, so cross-engine eval runs are traceable.
+The wrapper additionally records `engine` + `wall_clock_ms` + `usage` (input/output tokens + cost) + `redaction_counts` + `template_fields` in the top-level result, so cross-engine eval runs are traceable and per-run cost is auditable.
 
 ## Naming / conventions
 

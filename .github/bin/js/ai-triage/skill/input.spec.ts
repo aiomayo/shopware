@@ -1,7 +1,6 @@
 /**
  * Unit tests for the skill input contract:
  *   - extractTemplateFields: parses ### section headers from issue body
- *   - detectLanguage: heuristic language detection
  *   - SkillInput: Zod schema for the wrapper → skill payload
  */
 
@@ -10,7 +9,6 @@ import assert from "node:assert/strict";
 
 import {
   extractTemplateFields,
-  detectLanguage,
   SkillInput,
   RawIssue,
   truncateRawIssueInput,
@@ -58,31 +56,13 @@ test("extractTemplateFields: returns all-null on null/empty body", () => {
   assert.equal(empty.actual_behaviour, null);
 });
 
-// ---- language detection -------------------------------------------------
-
-test("detectLanguage: German body", () => {
-  assert.equal(detectLanguage("Das ist nicht korrekt"), "de");
-});
-
-test("detectLanguage: French body", () => {
-  assert.equal(detectLanguage("Ce n'est pas correct, nous voulons être sûrs"), "fr");
-});
-
-test("detectLanguage: English default", () => {
-  assert.equal(detectLanguage("The button is broken"), "en");
-});
-
-test("detectLanguage: null body is unknown", () => {
-  assert.equal(detectLanguage(null), "unknown");
-});
-
 // ---- SkillInput Zod -----------------------------------------------------
 
-test("SkillInput: rejects invalid language_detected value", () => {
+test("SkillInput: rejects unknown extra keys (.strict)", () => {
   assert.throws(() => SkillInput.parse({
     issue_id: 1, title: "x", body: "x", labels: [],
-    language_detected: "klingon",
     template_fields: { shopware_version: null, affected_area: null, actual_behaviour: null, expected_behaviour: null, reproduction_steps: null },
+    rogue_field: "x",
   }));
 });
 

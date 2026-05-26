@@ -14,7 +14,7 @@ function validOutput(overrides: Record<string, unknown> = {}): Record<string, un
   return {
     disposition: "valid-bug",
     severity: "medium",
-    suggested_labels: ["domain/admin"],
+    suggested_labels: ["domain/framework"],
     confidence: 0.8,
     reasoning: "ok",
     evidence_quotes: ["quote"],

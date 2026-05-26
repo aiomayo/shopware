@@ -6,10 +6,9 @@
  *  - `TemplateFields`: parsed Shopware-issue-template sections
  *  - `SkillInput`: the full input object the agent sees, wrapper-fed mode
  *  - `extractTemplateFields`: parse `### <Header>` sections from a body
- *  - `detectLanguage`: en/de/fr classifier (word-list heuristic)
  *
- * Side-effect-free imports. The Shopware-specific knowledge (template headers,
- * language word lists) is policy and belongs to the skill — not the wrapper.
+ * Side-effect-free imports. The Shopware-specific knowledge (template headers)
+ * is policy and belongs to the skill — not the wrapper.
  *
  * Prompt-assembly mechanics (frontmatter strip, <input_json> wrap) live in
  * ./prompt.ts. They are wrapper-side adapters, not part of the skill's input
@@ -41,7 +40,6 @@ export const RawIssue = z.object({
   title: z.string().max(MAX_TITLE_LEN),
   body: z.string().max(MAX_BODY_LEN).nullable(),
   labels: z.array(z.string().max(MAX_LABEL_LEN)).max(MAX_LABELS),
-  state: z.string().max(50).optional(),
 });
 export type RawIssue = z.infer<typeof RawIssue>;
 
@@ -59,11 +57,10 @@ export function truncateRawIssueInput(raw: {
   title: unknown;
   body: unknown;
   labels: unknown;
-  state?: unknown;
 }): unknown {
   const trim = (s: string, max: number): string =>
     s.length <= max ? s : s.slice(0, max - 16) + "\n\n[truncated]";
-  const out: Record<string, unknown> = {
+  return {
     issue_id: raw.issue_id,
     title: typeof raw.title === "string" ? raw.title.slice(0, MAX_TITLE_LEN) : raw.title,
     body: typeof raw.body === "string" ? trim(raw.body, MAX_BODY_LEN) : raw.body,
@@ -71,8 +68,6 @@ export function truncateRawIssueInput(raw: {
       ? raw.labels.slice(0, MAX_LABELS).map((l) => (typeof l === "string" ? l.slice(0, MAX_LABEL_LEN) : l))
       : raw.labels,
   };
-  if (raw.state !== undefined) out.state = raw.state;
-  return out;
 }
 
 // -- Template-field extraction (Shopware-issue-template specific) --------
@@ -121,19 +116,6 @@ export function extractTemplateFields(body: string | null): TemplateFields {
   };
 }
 
-// -- Language detection (universal utility) ------------------------------
-
-export const DetectedLanguage = z.enum(["en", "de", "fr", "unknown"]);
-export type DetectedLanguage = z.infer<typeof DetectedLanguage>;
-
-export function detectLanguage(body: string | null): DetectedLanguage {
-  if (!body) return "unknown";
-  const lc = body.toLowerCase();
-  if (/\b(ist|nicht|wird|sich|werden|sollte|haben|kann)\b/.test(lc)) return "de";
-  if (/\b(est|pas|nous|vous|sont|être)\b/.test(lc)) return "fr";
-  return "en";
-}
-
 // -- Skill input (what the agent receives in <input_json>, wrapper-fed) --
 
 export const SkillInput = z.object({
@@ -141,7 +123,6 @@ export const SkillInput = z.object({
   title: z.string().max(MAX_TITLE_LEN),
   body: z.string().max(MAX_BODY_LEN),
   labels: z.array(z.string().max(MAX_LABEL_LEN)).max(MAX_LABELS),
-  language_detected: DetectedLanguage,
   template_fields: TemplateFields,
 }).strict();
 export type SkillInput = z.infer<typeof SkillInput>;

@@ -33,14 +33,14 @@ You may be invoked one of two ways. **Detect mode from whether an `<input_json>`
 
 **Signal:** an `<input_json>` block IS present at the end.
 
-- Input: the JSON block carries `issue_id`, `title`, `body`, `labels`, `language_detected`, `template_fields`. The `body` is already **PII-redacted** (`[REDACTED_*]` placeholders) — do not reconstruct redacted values. Use the JSON verbatim, skip to step 2 of the workflow.
+- Input: the JSON block carries `issue_id`, `title`, `body`, `labels`, `template_fields`. The `body` is already **PII-redacted** (`[REDACTED_*]` placeholders) — do not reconstruct redacted values. Use the JSON verbatim, skip to step 2 of the workflow.
 - **Output: emit ONE JSON object as your single final message. No preamble, no plan, no status update, no trailing prose. NO markdown code fence around the JSON.** The wrapper's parser expects this exact shape.
 
 ### Interactive mode (Claude Code / opencode / Codex CLI in the repo)
 
 **Signal:** NO `<input_json>` block — the user typed something like "triage issue #16599".
 
-- Input: **Step 0** — fetch the issue yourself: `gh issue view <N> --json number,title,body,labels,state`. `GH_REPO` is set in env (`shopware/shopware`); no `--repo` flag needed. `template_fields` and `language_detected` are not pre-computed; work from `title` + `body` directly. **PII redaction is not applied** — quotes can include the raw text the user sees on their machine.
+- Input: **Step 0** — fetch the issue yourself: `gh issue view <N> --json number,title,body,labels,state`. `GH_REPO` is set in env (`shopware/shopware`); no `--repo` flag needed. `template_fields` is not pre-computed; work from `title` + `body` directly. **PII redaction is not applied** — quotes can include the raw text the user sees on their machine.
 - **Output: emit a human-readable Markdown summary as your final message. NO JSON, no code fence.** The user is reading your output in their terminal; a JSON blob is not useful.
   
   Use this Markdown structure:
@@ -83,7 +83,7 @@ The first three steps are mandatory for any plausible defect. Steps 4–5 are re
 
 1. **Understand the defect (no tools).** Describe it in ONE sentence in your own words. If you can't, that's the strongest signal for `needs-info` — skip Steps 2–5.
 
-2. **Identify the code area** (`rg`, `find`). Pick 2–4 keywords likely to be code identifiers (class names, method names, error strings, UI labels). Run `rg` in `src/`. The top-level directory (`src/Core/`, `src/Administration/`, `src/Storefront/`, `src/Elasticsearch/`) determines the **primary domain label** (see references/DOMAINS.md).
+2. **Identify the code area** (`rg`, `find`). Pick 2–4 keywords likely to be code identifiers (class names, method names, error strings, UI labels). Run `rg` in `src/`. Then, for the **primary domain label**, grep the package marker on the affected file: `#[Package('<key>')]` on PHP or `@sw-package <key>` on JS/TS. The marker is the authoritative team-ownership signal; the top-level directory is only a fallback when no marker is present (Twig, SCSS, YAML, …). See references/DOMAINS.md for the full key → label table.
 
 3. **Check recent changes** (`git log`). Run `git log --oneline --since="12 months ago" -- <affected paths>`. Look for `fix:` or `revert:` commits, **especially those referencing the issue number (`#N`) in the message** — direct fix-PR references.
 
