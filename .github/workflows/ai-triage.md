@@ -11,6 +11,14 @@ on:
         description: "Issue number to triage"
         required: true
         type: number
+  # TEMPORARY registration trigger — GitHub registers a workflow_dispatch workflow only
+  # after it exists on the default branch OR has run at least once. This fires the
+  # workflow once on push to register it so `gh aw run --ref <branch>` works; the agent
+  # bails immediately (empty issue_number). REMOVE after the first push registers it.
+  push:
+    paths:
+      - '.github/workflows/ai-triage.md'
+      - '.github/workflows/ai-triage.lock.yml'
 
 concurrency:                 # explicit — workflow_dispatch default group cancels parallel runs (gh-aw #19467)
   group: ai-triage-${{ github.event.inputs.issue_number }}
@@ -53,8 +61,14 @@ safe-outputs:
 
 ## This run
 
-Triage issue **#${{ github.event.inputs.issue_number }}** using the policy and references
-above. Investigate read-only (no labels, comments, or writes). When done, write your
-single `TriageOutput` JSON object to a file named `triage-output.json` in the workspace
-root, then call the `upload_artifact` tool on that path. Emit ONLY the JSON to that file
-— no surrounding prose, no markdown fence.
+**Registration run check (do this first):** if `issue_number` is empty — i.e. the input
+`${{ github.event.inputs.issue_number }}` renders as blank (this happens on the temporary
+registration `push` event, not on a real `workflow_dispatch`) — then take NO action,
+do not investigate, do not call any tool, and stop immediately. This is only a workflow
+registration run.
+
+Otherwise, triage issue **#${{ github.event.inputs.issue_number }}** using the policy and
+references above. Investigate read-only (no labels, comments, or writes). When done, write
+your single `TriageOutput` JSON object to a file named `triage-output.json` in the
+workspace root, then call the `upload_artifact` tool on that path. Emit ONLY the JSON to
+that file — no surrounding prose, no markdown fence.
