@@ -264,7 +264,7 @@ class ElasticsearchProductDefinitionTest extends TestCase
                         '_count' => [
                             'type' => 'long',
                         ],
-                        'name' => self::TRANSLATABLE_SEARCHABLE_MAPPING,
+                        'name' => self::TRANSLATABLE_EXACT_SEARCHABLE_MAPPING,
                     ],
                 ],
                 'categoryTree' => AbstractElasticsearchDefinition::KEYWORD_FIELD,
