@@ -210,3 +210,4 @@ danger.phar
 
 # Vite deps
 **/.tmp/vite/*
+.github/aw/logs/
